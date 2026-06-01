@@ -104,5 +104,21 @@ grep -q 'AUTHENTICATOR_PASSWORD=' build/.env && ok ".env has authenticator pw" |
 gen '{"capabilities":{"document_store":true},"postgres":{"password":"hunter2xyz"}}'
 grep -q 'POSTGRES_PASSWORD=hunter2xyz' build/.env && ok "config password honored" || bad "config password"
 
+# --- security: build/.env is chmod 600 and secret values are not printed ---
+gen '{"capabilities":{"document_store":true,"api":true}}'
+SEC_OUT="$OUT"
+perm="$(stat -c '%a' build/.env)"
+[ "$perm" = 600 ] && ok ".env is chmod 600" || bad ".env perms ($perm)"
+echo "$SEC_OUT" | grep -q 'JWT_SECRET=' && bad "secret value leaked to stdout" || ok "no secret value in stdout"
+echo "$SEC_OUT" | grep -q 'written to build/.env' && ok "secret notice printed" || bad "missing secret notice"
+
+# --- security: ports bind to localhost by default, widen on publish_externally ---
+gen '{"capabilities":{"document_store":true}}'
+grep -q '127.0.0.1:5432:5432' build/docker-compose.yml && ok "db bound to localhost by default" || bad "db not localhost-bound"
+gen '{"capabilities":{"document_store":true,"api":true},"postgres":{"publish_externally":true}}'
+grep -q '"5432:5432"' build/docker-compose.yml && ok "publish_externally widens db bind" || bad "publish_externally db bind"
+grep -q '"3000:3000"' build/docker-compose.yml && ok "publish_externally widens api bind" || bad "publish_externally api bind"
+grep -q '127.0.0.1' build/docker-compose.yml && bad "should not localhost-bind when external" || ok "no localhost bind when external"
+
 echo "----"; echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ]

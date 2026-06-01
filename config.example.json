@@ -2,7 +2,8 @@
   "postgres": {
     "user": "postgres",
     "db": "app",
-    "password": ""
+    "password": "",
+    "publish_externally": false
   },
   "seed_demo_data": true,
   "capabilities": {

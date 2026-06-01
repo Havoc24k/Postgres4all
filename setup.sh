@@ -164,6 +164,10 @@ PG_PW="$(jq -r '.postgres.password // ""' "$CONFIG")"; [ -n "$PG_PW" ] || { PG_P
     echo "JWT_SECRET=$JWT"
   fi
 } > build/.env
+chmod 600 build/.env
+
+PUBLISH_EXT="$(jq -r 'if .postgres.publish_externally == true then 1 else 0 end' "$CONFIG")"
+if [ "$PUBLISH_EXT" = 1 ]; then BIND_PREFIX=""; else BIND_PREFIX="127.0.0.1:"; fi
 
 # --- docker-compose.yml ---
 {
@@ -178,7 +182,7 @@ PG_PW="$(jq -r '.postgres.password // ""' "$CONFIG")"; [ -n "$PG_PW" ] || { PG_P
   echo "      POSTGRES_DB: \${POSTGRES_DB}"
   [ "${EN[api]}" = 1 ] && echo "      AUTHENTICATOR_PASSWORD: \${AUTHENTICATOR_PASSWORD}"
   echo "    ports:"
-  echo "      - \"5432:5432\""
+  echo "      - \"${BIND_PREFIX}5432:5432\""
   echo "    volumes:"
   echo "      - pgdata:/var/lib/postgresql/data"
   echo "    healthcheck:"
@@ -196,7 +200,7 @@ PG_PW="$(jq -r '.postgres.password // ""' "$CONFIG")"; [ -n "$PG_PW" ] || { PG_P
     echo "      PGRST_DB_ANON_ROLE: anon"
     echo "      PGRST_JWT_SECRET: \${JWT_SECRET}"
     echo "    ports:"
-    echo "      - \"3000:3000\""
+    echo "      - \"${BIND_PREFIX}3000:3000\""
     echo "    depends_on:"
     echo "      db:"
     echo "        condition: service_healthy"
@@ -205,10 +209,10 @@ PG_PW="$(jq -r '.postgres.password // ""' "$CONFIG")"; [ -n "$PG_PW" ] || { PG_P
   echo "  pgdata:"
 } > build/docker-compose.yml
 
-# --- report generated secrets once ---
-if [ "${GEN_PG:-0}" = 1 ];   then echo "generated POSTGRES_PASSWORD=$PG_PW"; fi
-if [ "${GEN_AUTH:-0}" = 1 ]; then echo "generated AUTHENTICATOR_PASSWORD=$AUTH_PW"; fi
-if [ "${GEN_JWT:-0}" = 1 ];  then echo "generated JWT_SECRET=$JWT"; fi
+# --- report generated secrets once (values stay in build/.env only) ---
+if [ "${GEN_PG:-0}" = 1 ] || [ "${GEN_AUTH:-0}" = 1 ] || [ "${GEN_JWT:-0}" = 1 ]; then
+  echo "Secrets were generated and written to build/.env (mode 0600). Keep that file safe and do not commit it."
+fi
 
 if [ "$DRY_RUN" -eq 1 ]; then
   echo "dry-run: build/ generated, not starting Docker"
