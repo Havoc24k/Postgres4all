@@ -1,10 +1,10 @@
 # postgres-everything
 
-A single Postgres container that does the jobs the video ("I replaced my entire stack with Postgres") hands to Redis, RabbitMQ, Elasticsearch, Pinecone, PostGIS systems, time-series DBs, Snowflake, and a hand-written API layer. A companion PostgREST container turns the schema into a REST API.
+A single Postgres container that does the jobs usually handed to Redis, RabbitMQ, Elasticsearch, Pinecone, PostGIS systems, time-series DBs, Snowflake, and a hand-written API layer. A companion PostgREST container turns the schema into a REST API.
 
 ## What maps to what
 
-| Video claim | Replaces | Mechanism | Needs an extension? |
+| Capability | Replaces | Mechanism | Needs an extension? |
 |---|---|---|---|
 | Document store | MongoDB | `jsonb` + GIN index | no (core) |
 | Job queue | Redis / RabbitMQ | `FOR UPDATE SKIP LOCKED` | no (core) |
@@ -101,7 +101,7 @@ curl 'http://localhost:3000/products?attributes=cs.{"wireless":true}'
 
 The `notes` table is per-user. PostgREST switches to the `authenticated` role when a request carries a valid JWT signed with `JWT_SECRET`; row-level security then limits every read/write to rows whose `owner` equals the token's `sub` claim. Mint a test token (any JWT library) with payload `{"role":"authenticated","sub":"alice"}` and send it as `Authorization: Bearer <token>`.
 
-## The caveat the video itself gives
+## The caveat
 
 Not a silver bullet. Postgres scales vertically very well; horizontal sharding for extreme scale is genuinely complex. Past the point of millions of events/sec or sub-millisecond caching for millions of concurrent connections, reach for purpose-built distributed systems. Below it, one Postgres is the cheaper, simpler choice.
 
