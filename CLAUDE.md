@@ -46,7 +46,7 @@ concatenates the enabled ones in a fixed canonical order (`timeseries` before `d
 
 Two containers (defined in the generated `build/docker-compose.yml`):
 
-- **db** — built from the generated `build/Dockerfile`. Base is `postgis/postgis:17-3.5` (which carries the PGDG apt repo and contrib modules pg_trgm / btree_gin / btree_gist). The Dockerfile then adds pgvector via apt and pg_graphql via an arch-aware prebuilt `.deb` from the Supabase release (amd64/arm64 selected at build time). Only present when the `api` capability is enabled.
+- **db** — always present; built from the generated `build/Dockerfile`. Base is `postgis/postgis:17-3.5` when the `gis` capability is enabled, otherwise the lighter `postgres:17`. pgvector is added via apt only when `vector` is enabled; pg_graphql via an arch-aware prebuilt `.deb` from the Supabase release (amd64/arm64 selected at build time) only when `api` is enabled. Both base images carry the PGDG apt repo and the contrib modules; of these the assembler only ever activates `pg_trgm` (`CREATE EXTENSION`), and only when `search` is enabled.
 - **postgrest** — `postgrest/postgrest:v12.2.3`. Connects as the `authenticator` login role and switches to `anon` (no JWT) or `authenticated` (valid JWT) per request. Only present when the `api` capability is enabled.
 
 **The PostgREST security model** spans three generated init files and is the trickiest part:

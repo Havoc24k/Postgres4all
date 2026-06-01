@@ -107,6 +107,6 @@ Not a silver bullet. Postgres scales vertically very well; horizontal sharding f
 
 ## Notes
 
-- Pinned: Postgres 17 + PostGIS 3.5, pgvector from PGDG, pg_graphql v1.5.11, PostgREST v12.2.3. Change `PG_MAJOR` / `PG_GRAPHQL_VERSION` in `docker-compose.yml` to move versions (keep them mutually compatible).
+- Pinned: Postgres 17 + PostGIS 3.5, pgvector from PGDG, pg_graphql v1.5.11, PostgREST v12.2.3. Change `PG_MAJOR` / `POSTGIS_VERSION` / `PG_GRAPHQL_VERSION` in `setup.sh` to move versions (keep them mutually compatible).
 - The image builds for both amd64 and arm64 (pg_graphql `.deb` is selected by architecture).
-- Demo grants are deliberately permissive (anon can read everything). Tighten the grants in `init/03-api-grants.sql` before any real use.
+- Demo grants are deliberately permissive (anon can read everything). Tighten them in the relevant `init/capabilities/*.sql` fragment and the grants block of `setup.sh` before any real use.
