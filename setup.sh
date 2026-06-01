@@ -53,6 +53,7 @@ PG_MAJOR=17
 POSTGIS_VERSION=3.5
 PG_GRAPHQL_VERSION=1.5.11
 
+cd "$(dirname "$0")"  # anchor build/ output next to the script; config already read above
 rm -rf build
 mkdir -p build/init
 
@@ -73,7 +74,9 @@ RUN apt-get update \\
 DF
   fi
   if [ "${EN[api]}" = 1 ]; then
-    echo "RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates wget && rm -rf /var/lib/apt/lists/*"
+    if [ "${EN[vector]}" != 1 ]; then
+      echo "RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates wget && rm -rf /var/lib/apt/lists/*"
+    fi
     printf 'RUN set -eux; arch="$(dpkg --print-architecture)"; '
     printf 'url="https://github.com/supabase/pg_graphql/releases/download/v%s/pg_graphql-v%s-pg%s-${arch}-linux-gnu.deb"; ' \
       "$PG_GRAPHQL_VERSION" "$PG_GRAPHQL_VERSION" "$PG_MAJOR"
