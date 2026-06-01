@@ -70,5 +70,22 @@ gen '{"capabilities":{"timeseries":true,"dashboards":true}}'
 awk '/CREATE TABLE events/{e=NR} /event_daily/{d=NR} END{exit !(e && d && e<d)}' build/init/02-schema.sql \
   && ok "timeseries precedes dashboards" || bad "order timeseries/dashboards"
 
+# --- api off: no roles file, no grants file ---
+gen '{"capabilities":{"document_store":true}}'
+[ -f build/init/00-roles.sh ] && bad "no roles file when api off" || ok "no roles file (api off)"
+[ -f build/init/03-api-grants.sql ] && bad "no grants when api off" || ok "no grants (api off)"
+
+# --- api on: roles + grants scoped to enabled tables ---
+gen '{"capabilities":{"document_store":true,"search":true,"api":true}}'
+[ -f build/init/00-roles.sh ] && ok "roles file present (api on)" || bad "roles file missing"
+grep -q 'GRANT SELECT ON products' build/init/03-api-grants.sql && ok "grants products" || bad "grants products"
+grep -q 'articles' build/init/03-api-grants.sql && ok "grants articles" || bad "grants articles"
+grep -q 'jobs' build/init/03-api-grants.sql && bad "must not grant jobs (off)" || ok "omits jobs grant"
+
+# --- auth on: notes CRUD grant ---
+gen '{"capabilities":{"document_store":true,"api":true,"auth":true}}'
+grep -q 'GRANT SELECT, INSERT, UPDATE, DELETE ON notes TO authenticated' build/init/03-api-grants.sql \
+  && ok "notes CRUD grant" || bad "notes CRUD grant"
+
 echo "----"; echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ]
