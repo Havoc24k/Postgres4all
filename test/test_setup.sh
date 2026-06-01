@@ -48,5 +48,27 @@ grep -q 'postgresql-17-pgvector' build/Dockerfile && ok "vector installs pgvecto
 gen '{"capabilities":{"document_store":true,"api":true}}'
 grep -q 'pg_graphql' build/Dockerfile && ok "api fetches pg_graphql" || bad "api pg_graphql"
 
+# --- extensions: only needed CREATE EXTENSION lines ---
+gen '{"capabilities":{"search":true,"vector":true}}'
+grep -q 'CREATE EXTENSION IF NOT EXISTS pg_trgm' build/init/01-extensions.sql && ok "search -> pg_trgm" || bad "search ext"
+grep -q 'CREATE EXTENSION IF NOT EXISTS vector' build/init/01-extensions.sql && ok "vector -> vector ext" || bad "vector ext"
+grep -q 'postgis' build/init/01-extensions.sql && bad "no postgis ext when gis off" || ok "no postgis ext"
+
+# --- schema assembly: only enabled tables ---
+gen '{"capabilities":{"document_store":true},"seed_demo_data":true}'
+grep -q 'CREATE TABLE products' build/init/02-schema.sql && ok "schema has products" || bad "schema products"
+grep -q 'CREATE TABLE jobs' build/init/02-schema.sql && bad "must omit jobs" || ok "schema omits jobs"
+grep -q "INSERT INTO products" build/init/02-schema.sql && ok "seed included when on" || bad "seed on"
+
+# --- seed toggle off: schema but no inserts ---
+gen '{"capabilities":{"document_store":true},"seed_demo_data":false}'
+grep -q 'CREATE TABLE products' build/init/02-schema.sql && ok "schema present, seed off" || bad "schema seed-off"
+grep -q 'INSERT INTO products' build/init/02-schema.sql && bad "no inserts when seed off" || ok "no inserts when seed off"
+
+# --- canonical order: timeseries before dashboards ---
+gen '{"capabilities":{"timeseries":true,"dashboards":true}}'
+awk '/CREATE TABLE events/{e=NR} /event_daily/{d=NR} END{exit !(e && d && e<d)}' build/init/02-schema.sql \
+  && ok "timeseries precedes dashboards" || bad "order timeseries/dashboards"
+
 echo "----"; echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ]
