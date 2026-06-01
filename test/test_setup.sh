@@ -3,6 +3,7 @@
 # on the generated build/ tree. No Docker required.
 set -uo pipefail
 cd "$(dirname "$0")/.."
+PROJ_ROOT="$PWD"
 
 PASS=0; FAIL=0
 ok()   { echo "ok   - $1"; PASS=$((PASS+1)); }
@@ -119,6 +120,21 @@ gen '{"capabilities":{"document_store":true,"api":true},"postgres":{"publish_ext
 grep -q '"5432:5432"' build/docker-compose.yml && ok "publish_externally widens db bind" || bad "publish_externally db bind"
 grep -q '"3000:3000"' build/docker-compose.yml && ok "publish_externally widens api bind" || bad "publish_externally api bind"
 grep -q '127.0.0.1' build/docker-compose.yml && bad "should not localhost-bind when external" || ok "no localhost bind when external"
+
+# --- dashboards+api: event_daily must be granted (ALTER DEFAULT PRIVILEGES does NOT cover matviews) ---
+gen '{"capabilities":{"timeseries":true,"dashboards":true,"api":true}}'
+grep -q 'event_daily' build/init/03-api-grants.sql && ok "dashboards grants event_daily" || bad "dashboards grants event_daily"
+
+# --- api-only (no read tables): coherent build, no empty GRANT SELECT line ---
+gen '{"capabilities":{"api":true,"auth":true}}'
+grep -qE 'GRANT SELECT ON +TO' build/init/03-api-grants.sql && bad "empty GRANT SELECT line emitted" || ok "no empty GRANT SELECT (api-only)"
+grep -q 'GRANT SELECT, INSERT, UPDATE, DELETE ON notes' build/init/03-api-grants.sql && ok "api-only still grants notes CRUD" || bad "api-only notes CRUD"
+
+# --- regression: relative config path works when invoked from another directory ---
+( tmpd="$(mktemp -d)"; cd "$tmpd"; printf '{"capabilities":{"document_store":true}}' > rel.json
+  "$PROJ_ROOT/setup.sh" --dry-run rel.json >/dev/null 2>&1; echo $? > rc; cd "$PROJ_ROOT"
+  [ "$(cat "$tmpd/rc")" = 0 ] && ok "relative config path from other dir" || bad "relative config path from other dir"
+  rm -rf "$tmpd" )
 
 echo "----"; echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ]

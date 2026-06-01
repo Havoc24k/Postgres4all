@@ -15,6 +15,7 @@ for arg in "$@"; do
   esac
 done
 [ -n "$CONFIG" ] || CONFIG="config.json"
+[[ "$CONFIG" = /* ]] || CONFIG="$PWD/$CONFIG"   # absolutise vs invocation dir, survives the later cd
 
 # --- preflight ---
 for tool in jq openssl; do
@@ -53,7 +54,7 @@ PG_MAJOR=17
 POSTGIS_VERSION=3.5
 PG_GRAPHQL_VERSION=1.5.11
 
-cd "$(dirname "$0")"  # anchor build/ output next to the script; config already read above
+cd "$(dirname "$0")"  # anchor build/ output next to the script; $CONFIG is absolute so later reads still work
 rm -rf build
 mkdir -p build/init
 
