@@ -19,15 +19,40 @@ A single Postgres container that does the jobs the video ("I replaced my entire 
 ## Run it
 
 ```bash
-cp .env.example .env      # then edit the values
-docker compose up --build
+cp config.example.json config.json   # then enable the capabilities you want
+./setup.sh                           # generates build/ and starts Docker
 ```
 
-First boot builds the image (installs pgvector + pg_graphql) and runs every script in `init/` once. Postgres is on `localhost:5432`, the REST API on `localhost:3000`.
+`setup.sh` reads `config.json`, generates an inspectable `build/` directory (Dockerfile,
+docker-compose.yml, .env, assembled `init/*`), then runs `docker compose` from it. Only the
+selected capabilities' extensions, tables, and the PostgREST container are provisioned. Inspect
+exactly what will run with `cat build/init/02-schema.sql`. Use `./setup.sh --dry-run` to generate
+`build/` without starting Docker.
 
-```bash
-psql postgres://postgres:<POSTGRES_PASSWORD>@localhost:5432/app
-```
+Re-run `setup.sh` after editing `config.json`. Postgres only runs the init scripts on a fresh data
+volume, so to apply schema/capability changes first wipe the volume:
+`docker compose -f build/docker-compose.yml down -v`, then `./setup.sh` again.
+
+Prerequisites: `docker`, `docker compose`, `jq`, `openssl`.
+
+### config.json
+
+`capabilities` is a map of the nine features to booleans; only the enabled ones are provisioned.
+Two dependencies are enforced (setup errors if violated): `dashboards` requires `timeseries`, and
+`auth` requires `api`. `seed_demo_data` (default `true`) controls whether the demo rows are loaded.
+
+Secrets (`postgres.password`, and `api.authenticator_password` / `api.jwt_secret` when `api` is on)
+are taken from `config.json` if set, otherwise auto-generated and written to `build/.env` (mode
+`0600`). api users read `JWT_SECRET` from `build/.env` to mint tokens. A user-provided
+`authenticator_password` is interpolated into a connection URI, so avoid the characters `@ : / ? #`
+in it (auto-generated values are hex and safe).
+
+By default the database (5432) and REST API (3000) bind to `127.0.0.1` only. Set
+`"publish_externally": true` in the `postgres` block to bind on all interfaces.
+
+> Note: `docker compose up --build` needs buildx >= 0.17.0. On older Docker, build the image with
+> the legacy builder first: `DOCKER_BUILDKIT=0 docker build -t postgres-everything:generated build/`,
+> then `docker compose --env-file build/.env -f build/docker-compose.yml up -d`.
 
 ## Try each capability
 
