@@ -49,4 +49,37 @@ fi
 
 echo "config OK: $(for c in "${CAPS[@]}"; do [ "${EN[$c]}" = 1 ] && printf '%s ' "$c"; done)"
 
-# Generation + run added in later tasks.
+PG_MAJOR=17
+POSTGIS_VERSION=3.5
+PG_GRAPHQL_VERSION=1.5.11
+
+rm -rf build
+mkdir -p build/init
+
+# --- Dockerfile ---
+{
+  if [ "${EN[gis]}" = 1 ]; then
+    echo "FROM postgis/postgis:${PG_MAJOR}-${POSTGIS_VERSION}"
+  else
+    echo "FROM postgres:${PG_MAJOR}"
+  fi
+  echo "ARG PG_MAJOR=${PG_MAJOR}"
+  if [ "${EN[vector]}" = 1 ]; then
+    cat <<DF
+RUN apt-get update \\
+ && apt-get install -y --no-install-recommends \\
+      postgresql-${PG_MAJOR}-pgvector ca-certificates wget \\
+ && rm -rf /var/lib/apt/lists/*
+DF
+  fi
+  if [ "${EN[api]}" = 1 ]; then
+    echo "RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates wget && rm -rf /var/lib/apt/lists/*"
+    printf 'RUN set -eux; arch="$(dpkg --print-architecture)"; '
+    printf 'url="https://github.com/supabase/pg_graphql/releases/download/v%s/pg_graphql-v%s-pg%s-${arch}-linux-gnu.deb"; ' \
+      "$PG_GRAPHQL_VERSION" "$PG_GRAPHQL_VERSION" "$PG_MAJOR"
+    printf 'wget -q -O /tmp/pg_graphql.deb "$url"; apt-get update; apt-get install -y --no-install-recommends /tmp/pg_graphql.deb; rm -f /tmp/pg_graphql.deb; rm -rf /var/lib/apt/lists/*\n'
+  fi
+  echo "COPY init/ /docker-entrypoint-initdb.d/"
+} > build/Dockerfile
+
+if [ "$DRY_RUN" -eq 1 ]; then echo "dry-run: generated build/ (Dockerfile)"; fi
