@@ -147,4 +147,73 @@ ROLES
   } > build/init/03-api-grants.sql
 fi
 
-if [ "$DRY_RUN" -eq 1 ]; then echo "dry-run: generated build/ (Dockerfile)"; fi
+# --- secrets: from config or generated ---
+rand_secret() { openssl rand -hex 24; }
+PG_USER="$(jq -r '.postgres.user // "postgres"' "$CONFIG")"
+PG_DB="$(jq -r '.postgres.db // "app"' "$CONFIG")"
+PG_PW="$(jq -r '.postgres.password // ""' "$CONFIG")"; [ -n "$PG_PW" ] || { PG_PW="$(rand_secret)"; GEN_PG=1; }
+
+{
+  echo "POSTGRES_USER=$PG_USER"
+  echo "POSTGRES_PASSWORD=$PG_PW"
+  echo "POSTGRES_DB=$PG_DB"
+  if [ "${EN[api]}" = 1 ]; then
+    AUTH_PW="$(jq -r '.api.authenticator_password // ""' "$CONFIG")"; [ -n "$AUTH_PW" ] || { AUTH_PW="$(openssl rand -hex 16)"; GEN_AUTH=1; }
+    JWT="$(jq -r '.api.jwt_secret // ""' "$CONFIG")"; [ -n "$JWT" ] || { JWT="$(rand_secret)$(rand_secret)"; GEN_JWT=1; }
+    echo "AUTHENTICATOR_PASSWORD=$AUTH_PW"
+    echo "JWT_SECRET=$JWT"
+  fi
+} > build/.env
+
+# --- docker-compose.yml ---
+{
+  echo "services:"
+  echo "  db:"
+  echo "    build: ."
+  echo "    image: postgres-everything:generated"
+  echo "    restart: unless-stopped"
+  echo "    environment:"
+  echo "      POSTGRES_USER: \${POSTGRES_USER}"
+  echo "      POSTGRES_PASSWORD: \${POSTGRES_PASSWORD}"
+  echo "      POSTGRES_DB: \${POSTGRES_DB}"
+  [ "${EN[api]}" = 1 ] && echo "      AUTHENTICATOR_PASSWORD: \${AUTHENTICATOR_PASSWORD}"
+  echo "    ports:"
+  echo "      - \"5432:5432\""
+  echo "    volumes:"
+  echo "      - pgdata:/var/lib/postgresql/data"
+  echo "    healthcheck:"
+  echo "      test: [\"CMD-SHELL\", \"pg_isready -U \$\${POSTGRES_USER} -d \$\${POSTGRES_DB}\"]"
+  echo "      interval: 5s"
+  echo "      timeout: 5s"
+  echo "      retries: 12"
+  if [ "${EN[api]}" = 1 ]; then
+    echo "  postgrest:"
+    echo "    image: postgrest/postgrest:v12.2.3"
+    echo "    restart: unless-stopped"
+    echo "    environment:"
+    echo "      PGRST_DB_URI: postgres://authenticator:\${AUTHENTICATOR_PASSWORD}@db:5432/\${POSTGRES_DB}"
+    echo "      PGRST_DB_SCHEMAS: public"
+    echo "      PGRST_DB_ANON_ROLE: anon"
+    echo "      PGRST_JWT_SECRET: \${JWT_SECRET}"
+    echo "    ports:"
+    echo "      - \"3000:3000\""
+    echo "    depends_on:"
+    echo "      db:"
+    echo "        condition: service_healthy"
+  fi
+  echo "volumes:"
+  echo "  pgdata:"
+} > build/docker-compose.yml
+
+# --- report generated secrets once ---
+if [ "${GEN_PG:-0}" = 1 ];   then echo "generated POSTGRES_PASSWORD=$PG_PW"; fi
+if [ "${GEN_AUTH:-0}" = 1 ]; then echo "generated AUTHENTICATOR_PASSWORD=$AUTH_PW"; fi
+if [ "${GEN_JWT:-0}" = 1 ];  then echo "generated JWT_SECRET=$JWT"; fi
+
+if [ "$DRY_RUN" -eq 1 ]; then
+  echo "dry-run: build/ generated, not starting Docker"
+  exit 0
+fi
+
+echo "starting stack..."
+docker compose --env-file build/.env -f build/docker-compose.yml up --build

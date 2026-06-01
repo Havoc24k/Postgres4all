@@ -87,5 +87,22 @@ gen '{"capabilities":{"document_store":true,"api":true,"auth":true}}'
 grep -q 'GRANT SELECT, INSERT, UPDATE, DELETE ON notes TO authenticated' build/init/03-api-grants.sql \
   && ok "notes CRUD grant" || bad "notes CRUD grant"
 
+# --- compose: db always, postgrest only with api ---
+gen '{"capabilities":{"document_store":true}}'
+grep -q 'services:' build/docker-compose.yml && ok "compose has services" || bad "compose services"
+grep -q 'postgrest' build/docker-compose.yml && bad "no postgrest when api off" || ok "no postgrest (api off)"
+grep -q 'POSTGRES_PASSWORD=' build/.env && ok ".env has postgres pw" || bad ".env postgres pw"
+grep -q 'JWT_SECRET=' build/.env && bad "no JWT_SECRET when api off" || ok ".env omits jwt (api off)"
+
+# --- compose: api on -> postgrest service + secrets ---
+gen '{"capabilities":{"document_store":true,"api":true}}'
+grep -q 'postgrest' build/docker-compose.yml && ok "postgrest present (api on)" || bad "postgrest missing"
+grep -q 'JWT_SECRET=' build/.env && ok ".env has jwt (api on)" || bad ".env jwt"
+grep -q 'AUTHENTICATOR_PASSWORD=' build/.env && ok ".env has authenticator pw" || bad ".env authenticator pw"
+
+# --- secrets honored from config when provided ---
+gen '{"capabilities":{"document_store":true},"postgres":{"password":"hunter2xyz"}}'
+grep -q 'POSTGRES_PASSWORD=hunter2xyz' build/.env && ok "config password honored" || bad "config password"
+
 echo "----"; echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ]
