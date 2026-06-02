@@ -129,11 +129,26 @@ emit_remove_sql() {
   return 0
 }
 
+emit_functions_sql() {
+  # Concatenate functions/*.sql in deterministic (LC_ALL=C) sorted order; print nothing if none exist.
+  local f found=0
+  while IFS= read -r f; do
+    [ -e "$f" ] || continue
+    found=1
+    printf -- '-- %s\n' "$f"
+    cat "$f"
+    echo
+  done < <(printf '%s\n' functions/*.sql | LC_ALL=C sort)
+  [ "$found" = 1 ] && echo "NOTIFY pgrst, 'reload schema';"
+  return 0
+}
+
 DRY_RUN=0
 UPDATE=0
 ALLOW_DROP=0
 INSTALLED_CSV=""
 INSTALLED_GIVEN=0
+APPLY_FUNCTIONS=0
 CONFIG=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -145,14 +160,32 @@ while [ $# -gt 0 ]; do
       case "$2" in --*) die "--installed requires a value (got flag '$2')";; esac
       INSTALLED_CSV="$2"; INSTALLED_GIVEN=1; shift ;;
     --installed=*) INSTALLED_CSV="${1#*=}"; INSTALLED_GIVEN=1 ;;
+    --apply-functions) APPLY_FUNCTIONS=1 ;;
     --*) die "unknown option: $1" ;;
     *) CONFIG="$1" ;;
   esac
   shift
 done
+if [ "$APPLY_FUNCTIONS" = 1 ] && [ "$UPDATE" = 1 ];          then die "--apply-functions cannot be combined with --update"; fi
+if [ "$APPLY_FUNCTIONS" = 1 ] && [ "$ALLOW_DROP" = 1 ];      then die "--apply-functions cannot be combined with --allow-drop"; fi
+if [ "$APPLY_FUNCTIONS" = 1 ] && [ "$INSTALLED_GIVEN" = 1 ]; then die "--apply-functions cannot be combined with --installed"; fi
 if [ "$ALLOW_DROP" = 1 ] && [ "$UPDATE" = 0 ]; then die "--allow-drop requires --update"; fi
 if [ "$INSTALLED_GIVEN" = 1 ] && [ "$UPDATE" = 0 ]; then die "--installed requires --update"; fi
 if [ "$INSTALLED_GIVEN" = 1 ] && [ -z "$INSTALLED_CSV" ]; then die "--installed requires a non-empty value"; fi
+if [ "$APPLY_FUNCTIONS" = 1 ]; then
+  cd "$(dirname "$0")"   # resolve functions/*.sql relative to the script
+  if ! ls functions/*.sql >/dev/null 2>&1; then
+    echo "no functions to apply (functions/ has no .sql files)."
+    exit 0
+  fi
+  if [ "$DRY_RUN" = 1 ]; then
+    emit_functions_sql
+    exit 0
+  fi
+  # live apply added in Task 4
+  die "internal: live apply-functions not implemented"
+fi
+
 [ -n "$CONFIG" ] || CONFIG="config.json"
 [[ "$CONFIG" = /* ]] || CONFIG="$PWD/$CONFIG"   # absolutise vs invocation dir, survives the later cd
 
