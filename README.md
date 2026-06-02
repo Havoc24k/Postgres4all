@@ -2,10 +2,7 @@
 
 # 🐘 Postgres4all
 
-**One Postgres that replaces your whole backend stack.** One `config.json`, one command.
-
-It stands in for MongoDB, Redis/RabbitMQ, Elasticsearch, Pinecone, PostGIS stacks, time-series DBs,
-Snowflake, and a hand-written API layer — only the capabilities you switch on are provisioned.
+**One Postgres that does the job of your entire backend stack.**
 
 ![PostgreSQL 17](https://img.shields.io/badge/PostgreSQL-17-336791?logo=postgresql&logoColor=white)
 ![pgvector](https://img.shields.io/badge/pgvector-HNSW-4169e1)
@@ -13,6 +10,44 @@ Snowflake, and a hand-written API layer — only the capabilities you switch on 
 ![Go](https://img.shields.io/badge/built%20with-Go-00add8?logo=go&logoColor=white)
 
 </div>
+
+---
+
+## What is it?
+
+A typical product stitches together a pile of services — MongoDB for documents, Redis or RabbitMQ for
+queues, Elasticsearch for search, Pinecone for vectors, PostGIS for maps, a time-series database for
+telemetry, Snowflake for dashboards, and a hand-written service for the API and auth. That's eight
+systems to run, secure, integrate, and keep in sync.
+
+Postgres can do every one of those jobs natively. **Postgres4all** lets you declare which of them you
+want in a `config.json`, and provisions a single Postgres container (plus an optional PostgREST API)
+that does exactly those — and nothing you didn't ask for.
+
+What you get instead of eight systems:
+
+- **One thing to operate** — one database to back up, secure, monitor, and scale.
+- **Transactional consistency for free** — storing a document *and* enqueuing a job is a single
+  transaction, not a two-phase dance across services.
+- **No glue code** — PostgREST turns your schema (and your own SQL functions) into a REST/GraphQL API
+  with no application tier in between.
+
+### What each capability replaces
+
+| | Capability | Replaces | Mechanism | Needs |
+|:--:|---|---|---|:--:|
+| 📄 | `document_store` | MongoDB | `jsonb` + GIN | core |
+| 📬 | `job_queue` | Redis / RabbitMQ | `FOR UPDATE SKIP LOCKED` | core |
+| 🔍 | `search` | Elasticsearch | `tsvector` + trigrams | `pg_trgm` |
+| 🧠 | `vector` | Pinecone | `pgvector` + HNSW | **`pgvector`** |
+| 🗺️ | `gis` | GIS systems | PostGIS + GiST | **`postgis`** |
+| 📈 | `timeseries` | time-series DB | partitioning + BRIN | core |
+| 📊 | `dashboards` | Snowflake | materialized views | core |
+| 🔌 | `api` | Node/Python middleware | PostgREST + `pg_graphql` | **`pg_graphql`** |
+| 🔐 | `auth` | hand-written auth | row-level security | core |
+
+The **bold** extensions are the only ones that add weight to the image, and they're installed *only*
+when you enable that capability. Everything else is core PostgreSQL.
 
 ---
 
@@ -67,65 +102,47 @@ curl -X POST http://localhost:3000/rpc/submit_product \ # call your own /rpc bus
 
 ---
 
-## What replaces what
-
-| | Capability | Replaces | Mechanism | Needs |
-|:--:|---|---|---|:--:|
-| 📄 | `document_store` | MongoDB | `jsonb` + GIN | core |
-| 📬 | `job_queue` | Redis / RabbitMQ | `FOR UPDATE SKIP LOCKED` | core |
-| 🔍 | `search` | Elasticsearch | `tsvector` + trigrams | `pg_trgm` |
-| 🧠 | `vector` | Pinecone | `pgvector` + HNSW | **`pgvector`** |
-| 🗺️ | `gis` | GIS systems | PostGIS + GiST | **`postgis`** |
-| 📈 | `timeseries` | time-series DB | partitioning + BRIN | core |
-| 📊 | `dashboards` | Snowflake | materialized views | core |
-| 🔌 | `api` | Node/Python middleware | PostgREST + `pg_graphql` | **`pg_graphql`** |
-| 🔐 | `auth` | hand-written auth | row-level security | core |
-
-The **bold** extensions are the only ones that add weight to the image, installed *only* when you
-enable that capability. Everything else is core PostgreSQL.
-
----
-
 ## Configure
 
 `config.json` toggles capabilities. `dashboards` needs `timeseries`, `auth` needs `api` (enforced).
 
 ```jsonc
 {
-  "postgres": { "user": "postgres", "db": "app", "password": "" },
-  "seed_demo_data": true,
-  "capabilities": { "document_store": true, "job_queue": true, "api": true },
-  "api": { "authenticator_password": "", "jwt_secret": "" }
-}
-```
-
-<details>
-<summary>More options (secrets, networking, all keys)</summary>
-
-```jsonc
-{
   "postgres": {
-    "user": "postgres", "db": "app", "password": "",
-    "publish_externally": false        // bind 0.0.0.0 instead of 127.0.0.1
+    "user": "postgres",
+    "db": "app",
+    "password": ""
   },
-  "seed_demo_data": true,              // load demo rows (default true)
+  "seed_demo_data": true,
   "capabilities": {
-    "document_store": false, "job_queue": false, "search": false,
-    "vector": false, "gis": false, "timeseries": false,
-    "dashboards": false, "api": false, "auth": false
+    "document_store": true,
+    "job_queue":      true,
+    "search":         false,
+    "vector":         false,
+    "gis":            false,
+    "timeseries":     false,
+    "dashboards":     false,
+    "api":            true,
+    "auth":           false
   },
-  "api": { "authenticator_password": "", "jwt_secret": "" },
-  "languages": { "plperl": false, "plpython": false, "allow_untrusted": false }
+  "api": {
+    "authenticator_password": "",
+    "jwt_secret": ""
+  },
+  "languages": {
+    "plperl": false,
+    "plpython": false,
+    "allow_untrusted": false
+  }
 }
 ```
 
 - **Secrets** (`postgres.password`, `api.authenticator_password`, `api.jwt_secret`) are taken from
   config if set, else auto-generated into `build/.env` (mode `0600`). API users read `JWT_SECRET`
-  there to mint tokens. Avoid `@ : / ? #` in a user-set `authenticator_password` (it goes into a URI).
-- **Networking:** 5432/3000 bind to `127.0.0.1` only unless `publish_externally: true`.
+  there to mint tokens.
+- **Networking:** 5432/3000 bind to `127.0.0.1` only — set `"publish_externally": true` in `postgres`
+  to bind all interfaces.
 - `build/` is generated and git-ignored — never hand-edit it.
-
-</details>
 
 ---
 
@@ -161,24 +178,51 @@ half-applies; existing secrets in `build/.env` are reused.
 ## Custom business logic (`/rpc`)
 
 Drop SQL functions in `functions/`; each `public`-schema function becomes a `POST /rpc/<name>` endpoint.
+The shipped `functions/example_submit.sql` stores a document **and** enqueues a job in one atomic call:
+
+```sql
+-- functions/submit_product.sql   →   POST /rpc/submit_product
+CREATE OR REPLACE FUNCTION submit_product(name text, attributes jsonb DEFAULT '{}')
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER SET search_path = public, pg_temp   -- run privileged so anon callers can write
+AS $$
+DECLARE new_id bigint;
+BEGIN
+  INSERT INTO products (name, attributes) VALUES (name, attributes) RETURNING id INTO new_id;
+  INSERT INTO jobs (payload) VALUES (jsonb_build_object('task','index','product_id',new_id));
+  RETURN jsonb_build_object('product_id', new_id, 'queued', true);
+END $$;
+
+GRANT EXECUTE ON FUNCTION submit_product(text, jsonb) TO anon, authenticated;
+```
+
+Apply it (idempotent; reloads PostgREST so the new endpoint is live immediately):
 
 ```bash
-./postgres4all apply-functions             # apply functions/*.sql + reload PostgREST
+./postgres4all apply-functions             # apply functions/*.sql
 ./postgres4all apply-functions --dry-run   # preview the SQL
 ```
 
-The shipped `functions/example_submit.sql` writes a document **and** enqueues a job in one atomic call.
+```bash
+curl -X POST http://localhost:3000/rpc/submit_product \
+  -H 'Content-Type: application/json' -d '{"name":"Keyboard"}'    # -> {"product_id":3,"queued":true}
+```
+
+**Supported languages:** `plpgsql` (always on), `plperl` (trusted), and `plpython` (untrusted
+`plpython3u`). Enable the latter two in `config.json`'s `languages` block at install time — `plpython`
+also requires `"allow_untrusted": true`. A function in any installed language is exposed by PostgREST
+the same way.
 
 <details>
-<summary>SECURITY DEFINER, and other languages</summary>
+<summary>SECURITY DEFINER and other notes</summary>
 
 - A function doing privileged writes for unprivileged callers (`anon`/`authenticated`, who only have
-  `SELECT`) must be `SECURITY DEFINER` with a pinned `search_path` — see the example. Otherwise the
-  caller gets `permission denied`.
+  `SELECT`) must be `SECURITY DEFINER` with a pinned `search_path`, as above — otherwise the caller
+  gets `permission denied`.
 - Apply is additive (`CREATE OR REPLACE`); deleting a `.sql` file does **not** drop its function —
   run `DROP FUNCTION` yourself.
-- Beyond `plpgsql`, enable `plperl` (trusted) or `plpython` (untrusted `plpython3u`, gated behind
-  `"allow_untrusted": true`) in the `languages` block at install time.
+- Languages are install-time: enabling one on a running install needs a fresh build, not `update`.
 
 </details>
 
