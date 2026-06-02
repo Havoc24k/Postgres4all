@@ -5,15 +5,72 @@ CAPS=(document_store job_queue search vector gis timeseries dashboards api auth)
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 
+declare -A EXT_OF=( [search]=pg_trgm [vector]=vector [gis]=postgis [api]=pg_graphql )
+declare -A READ_TABLE=(
+  [document_store]=products [job_queue]=jobs [search]=articles
+  [vector]=documents [gis]=places [timeseries]=events [dashboards]=event_daily
+)
+
+_compose() { docker compose --env-file build/.env -f build/docker-compose.yml "$@"; }
+_pgdata_volume_name() { _compose config --format json 2>/dev/null | jq -r '.volumes.pgdata.name // empty'; }
+_db_cid() { _compose ps -q db 2>/dev/null; }
+_psql_q() { _compose exec -T db psql -tAqc "$1" -U "$PG_USER" -d "$PG_DB"; }
+_apply_sql() { _compose exec -T db psql -v ON_ERROR_STOP=1 --single-transaction -U "$PG_USER" -d "$PG_DB"; }
+
+_wait_db_healthy() {
+  local i cid
+  for i in $(seq 1 30); do
+    cid="$(_db_cid)"
+    if [ -n "$cid" ] && [ "$(docker inspect -f '{{.State.Health.Status}}' "$cid" 2>/dev/null)" = healthy ]; then
+      return 0
+    fi
+    sleep 2
+  done
+  die "database did not become healthy"
+}
+
+# up -d with rebuild + --remove-orphans, with a legacy-builder fallback for buildx < 0.17.
+_build_up() {
+  local err; err="$(mktemp)"
+  if _compose up -d --build --remove-orphans 2>"$err"; then rm -f "$err"; return 0; fi
+  if grep -qi 'buildx' "$err"; then
+    DOCKER_BUILDKIT=0 docker build -t postgres-everything:generated build/ \
+      && _compose up -d --no-build --remove-orphans
+  else
+    cat "$err" >&2; rm -f "$err"; die "docker build/up failed"
+  fi
+  rm -f "$err"
+}
+
+# Stubs (filled in later tasks):
+query_installed() { die "internal: query_installed not implemented"; }
+emit_pre_sql()    { :; }
+emit_add_sql()    { :; }
+emit_remove_sql() { :; }
+
 DRY_RUN=0
+UPDATE=0
+ALLOW_DROP=0
+INSTALLED_CSV=""
+INSTALLED_GIVEN=0
 CONFIG=""
-for arg in "$@"; do
-  case "$arg" in
+while [ $# -gt 0 ]; do
+  case "$1" in
     --dry-run) DRY_RUN=1 ;;
-    --*) die "unknown option: $arg" ;;
-    *) CONFIG="$arg" ;;
+    --update) UPDATE=1 ;;
+    --allow-drop) ALLOW_DROP=1 ;;
+    --installed)
+      [ $# -ge 2 ] || die "--installed requires a value"
+      case "$2" in --*) die "--installed requires a value (got flag '$2')";; esac
+      INSTALLED_CSV="$2"; INSTALLED_GIVEN=1; shift ;;
+    --installed=*) INSTALLED_CSV="${1#*=}"; INSTALLED_GIVEN=1 ;;
+    --*) die "unknown option: $1" ;;
+    *) CONFIG="$1" ;;
   esac
+  shift
 done
+if [ "$ALLOW_DROP" = 1 ] && [ "$UPDATE" = 0 ]; then die "--allow-drop requires --update"; fi
+if [ "$INSTALLED_GIVEN" = 1 ] && [ "$UPDATE" = 0 ]; then die "--installed requires --update"; fi
 [ -n "$CONFIG" ] || CONFIG="config.json"
 [[ "$CONFIG" = /* ]] || CONFIG="$PWD/$CONFIG"   # absolutise vs invocation dir, survives the later cd
 
@@ -55,6 +112,16 @@ POSTGIS_VERSION=3.5
 PG_GRAPHQL_VERSION=1.5.11
 
 cd "$(dirname "$0")"  # anchor build/ output next to the script; $CONFIG is absolute so later reads still work
+
+# On update, reuse the existing install's secrets (regenerating them would break the
+# stored authenticator password / superuser password / JWT signing key).
+OLD_PG_PW=""; OLD_AUTH_PW=""; OLD_JWT=""
+if [ "$UPDATE" = 1 ] && [ -f build/.env ]; then
+  OLD_PG_PW="$(grep '^POSTGRES_PASSWORD=' build/.env | cut -d= -f2-)" || true
+  OLD_AUTH_PW="$(grep '^AUTHENTICATOR_PASSWORD=' build/.env | cut -d= -f2-)" || true
+  OLD_JWT="$(grep '^JWT_SECRET=' build/.env | cut -d= -f2-)" || true
+fi
+
 rm -rf build
 mkdir -p build/init
 
@@ -143,10 +210,6 @@ ROLES
   chmod +x build/init/00-roles.sh
 
   # --- 03-api-grants.sql (read tables scoped to enabled caps) ---
-  declare -A READ_TABLE=(
-    [document_store]=products [job_queue]=jobs [search]=articles
-    [vector]=documents [gis]=places [timeseries]=events [dashboards]=event_daily
-  )
   read_tables=""
   for c in document_store job_queue search vector gis timeseries dashboards; do
     [ "${EN[$c]}" = 1 ] && read_tables="${read_tables:+$read_tables, }${READ_TABLE[$c]}"
@@ -166,15 +229,21 @@ fi
 rand_secret() { openssl rand -hex 24; }
 PG_USER="$(jq -r '.postgres.user // "postgres"' "$CONFIG")"
 PG_DB="$(jq -r '.postgres.db // "app"' "$CONFIG")"
-PG_PW="$(jq -r '.postgres.password // ""' "$CONFIG")"; [ -n "$PG_PW" ] || { PG_PW="$(rand_secret)"; GEN_PG=1; }
+PG_PW="$(jq -r '.postgres.password // ""' "$CONFIG")"
+[ -n "$PG_PW" ] || PG_PW="${OLD_PG_PW:-}"
+[ -n "$PG_PW" ] || { PG_PW="$(rand_secret)"; GEN_PG=1; }
 
 {
   echo "POSTGRES_USER=$PG_USER"
   echo "POSTGRES_PASSWORD=$PG_PW"
   echo "POSTGRES_DB=$PG_DB"
   if [ "${EN[api]}" = 1 ]; then
-    AUTH_PW="$(jq -r '.api.authenticator_password // ""' "$CONFIG")"; [ -n "$AUTH_PW" ] || { AUTH_PW="$(openssl rand -hex 16)"; GEN_AUTH=1; }
-    JWT="$(jq -r '.api.jwt_secret // ""' "$CONFIG")"; [ -n "$JWT" ] || { JWT="$(rand_secret)$(rand_secret)"; GEN_JWT=1; }
+    AUTH_PW="$(jq -r '.api.authenticator_password // ""' "$CONFIG")"
+    [ -n "$AUTH_PW" ] || AUTH_PW="${OLD_AUTH_PW:-}"
+    [ -n "$AUTH_PW" ] || { AUTH_PW="$(openssl rand -hex 16)"; GEN_AUTH=1; }
+    JWT="$(jq -r '.api.jwt_secret // ""' "$CONFIG")"
+    [ -n "$JWT" ] || JWT="${OLD_JWT:-}"
+    [ -n "$JWT" ] || { JWT="$(rand_secret)$(rand_secret)"; GEN_JWT=1; }
     echo "AUTHENTICATOR_PASSWORD=$AUTH_PW"
     echo "JWT_SECRET=$JWT"
   fi
@@ -229,10 +298,19 @@ if [ "${GEN_PG:-0}" = 1 ] || [ "${GEN_AUTH:-0}" = 1 ] || [ "${GEN_JWT:-0}" = 1 ]
   echo "Secrets were generated and written to build/.env (mode 0600). Keep that file safe and do not commit it."
 fi
 
-if [ "$DRY_RUN" -eq 1 ]; then
-  echo "dry-run: build/ generated, not starting Docker"
+if [ "$UPDATE" = 0 ]; then
+  # ---------- INSTALL MODE ----------
+  if [ "$DRY_RUN" = 1 ]; then echo "dry-run: build/ generated, not starting Docker"; exit 0; fi
+  vol="$(_pgdata_volume_name)"
+  if [ -n "$vol" ] && docker volume inspect "$vol" >/dev/null 2>&1; then
+    die "an install already exists (volume $vol). Use './setup.sh --update' to change capabilities, or 'docker compose -f build/docker-compose.yml down -v' to wipe it first."
+  fi
+  echo "starting stack..."
+  docker compose --env-file build/.env -f build/docker-compose.yml up --build
   exit 0
 fi
 
-echo "starting stack..."
-docker compose --env-file build/.env -f build/docker-compose.yml up --build
+# ---------- UPDATE MODE ----------
+# (delta computation + plan + dry-run print + live execution added in Tasks 4-7)
+echo "update: not yet implemented"
+exit 0
