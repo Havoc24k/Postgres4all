@@ -136,5 +136,13 @@ grep -q 'GRANT SELECT, INSERT, UPDATE, DELETE ON notes' build/init/03-api-grants
   [ "$(cat "$tmpd/rc")" = 0 ] && ok "relative config path from other dir" || bad "relative config path from other dir"
   rm -rf "$tmpd" )
 
+# --- meta: 04-meta.sql records enabled caps in p4a_meta schema ---
+gen '{"capabilities":{"document_store":true,"vector":true}}'
+grep -q 'CREATE SCHEMA IF NOT EXISTS p4a_meta' build/init/04-meta.sql && ok "meta schema created" || bad "meta schema"
+grep -q "INSERT INTO p4a_meta.capabilities" build/init/04-meta.sql && ok "meta inserts caps" || bad "meta insert"
+grep -q "('document_store')" build/init/04-meta.sql && ok "meta has document_store" || bad "meta document_store"
+grep -q "('vector')" build/init/04-meta.sql && ok "meta has vector" || bad "meta vector"
+grep -q "('api')" build/init/04-meta.sql && bad "meta must omit disabled api" || ok "meta omits api"
+
 echo "----"; echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ]
