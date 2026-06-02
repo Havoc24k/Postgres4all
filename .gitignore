@@ -2,3 +2,5 @@ build/
 .env
 config.json
 .remember/
+/postgres4all
+*.test
