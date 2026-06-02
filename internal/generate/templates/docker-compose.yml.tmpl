@@ -1,0 +1,38 @@
+services:
+  db:
+    build: .
+    image: {{.Image}}
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+{{- if .API}}
+      AUTHENTICATOR_PASSWORD: ${AUTHENTICATOR_PASSWORD}
+{{- end}}
+    ports:
+      - "{{.Bind}}5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+{{- if .API}}
+  postgrest:
+    image: {{.PostgRESTImage}}
+    restart: unless-stopped
+    environment:
+      PGRST_DB_URI: postgres://authenticator:${AUTHENTICATOR_PASSWORD}@db:5432/${POSTGRES_DB}
+      PGRST_DB_SCHEMAS: public
+      PGRST_DB_ANON_ROLE: anon
+      PGRST_JWT_SECRET: ${JWT_SECRET}
+    ports:
+      - "{{.Bind}}3000:3000"
+    depends_on:
+      db:
+        condition: service_healthy
+{{- end}}
+volumes:
+  pgdata:
