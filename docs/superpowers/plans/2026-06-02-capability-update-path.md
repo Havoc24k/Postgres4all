@@ -4,32 +4,21 @@
 
 **Goal:** Let `./setup.sh --update` add (and, with `--allow-drop`, remove) capabilities on a running postgres-everything install without destroying data.
 
-**Architecture:** A metadata table `p4a_meta.capabilities` records installed capabilities. `--update` diffs the config target against it and applies a delta in three ordered phases (drops on the current image → rebuild/recreate container with the volume preserved → adds on the new image), each a single `psql --single-transaction`. A `--update --dry-run --installed "<csv>"` mode prints the plan + delta SQL with no Docker/DB, so the pure-bash test suite can drive it.
+**Architecture:** A metadata table `p4a_meta.capabilities` records installed capabilities. `--update` diffs the config target against it and applies a delta in ordered phases — Phase 0 creates the role chain *before* the rebuild (so PostgREST doesn't crash-loop), Phase 1 drops on the current image, Phase 2 rebuilds/recreates the container with the volume preserved, Phase 3 adds on the new image — each a single `psql --single-transaction`. A `--update --dry-run --installed "<csv>"` mode prints the plan + per-phase delta SQL with no Docker/DB, so the pure-bash test suite can drive it.
 
-**Tech Stack:** Bash, `jq`, Docker Compose, PostgreSQL 17, PostgREST. Tests extend `test/test_setup.sh` (pure bash, `--dry-run`).
+**Tech Stack:** Bash, `jq`, Docker Compose, PostgreSQL 17, PostgREST. Tests extend `test/test_setup.sh` and add `test/test_update.sh` (pure bash, `--dry-run`).
 
 **Spec:** `docs/superpowers/specs/2026-06-02-capability-update-path-design.md`
 
-**Canonical capability order:** `document_store, job_queue, search, vector, gis, timeseries, dashboards, api, auth`. Extension map: `search→pg_trgm, vector→vector, gis→postgis, api→pg_graphql`. Read-table map: `document_store→products, job_queue→jobs, search→articles, vector→documents, gis→places, timeseries→events, dashboards→event_daily`.
+**This plan was adversarially hardened** (5-lens review). The critical fixes are baked in: remove the global dry-run early-exit, Phase-0 idempotent roles, grant-after-create ordering, `REVOKE` before dropping `anon`, `PG_USER`/`PG_DB` (not `POSTGRES_USER`), secret preservation on update, `--remove-orphans`, robust volume-name derivation, require-volume guard, buildkit fallback in-script, portable healthcheck.
 
----
-
-## File Structure
-
-Created:
-- `init/capabilities/<cap>.drop.sql` (8 files) — per-capability teardown.
-- `test/test_update.sh` — update-mode bash tests (sourced helpers shared with test_setup.sh, or standalone). Standalone to keep concerns separate.
-
-Modified:
-- `setup.sh` — arg parsing (`--update`, `--allow-drop`, `--installed`), `04-meta.sql` generation, fresh-install guard, delta computation + delta-SQL generation, three-phase execution.
-- `test/test_setup.sh` — add the `04-meta.sql` generation assertion.
-- `README.md`, `CLAUDE.md` — document the update path.
+**Canonical capability order:** `document_store, job_queue, search, vector, gis, timeseries, dashboards, api, auth`. `SCHEMA_ORDER` (caps that own a schema fragment) = the same list minus `api`. Extension map: `search→pg_trgm, vector→vector, gis→postgis, api→pg_graphql`. Read-table map: `document_store→products, job_queue→jobs, search→articles, vector→documents, gis→places, timeseries→events, dashboards→event_daily`.
 
 ---
 
 ### Task 1: Per-capability `drop.sql` fragments
 
-**Files:** Create `init/capabilities/{document_store,job_queue,search,vector,gis,timeseries,dashboards,auth}.drop.sql`
+**Files:** Create `init/capabilities/<cap>.drop.sql` (8 files)
 
 - [ ] **Step 1: Create the 8 drop fragments**
 
@@ -67,13 +56,9 @@ DROP MATERIALIZED VIEW IF EXISTS event_daily;
 DROP TABLE IF EXISTS notes CASCADE;
 ```
 
-- [ ] **Step 2: Verify**
-
-Run: `ls init/capabilities/*.drop.sql | wc -l`
-Expected: `8`
+- [ ] **Step 2: Verify** — `ls init/capabilities/*.drop.sql | wc -l` → `8`
 
 - [ ] **Step 3: Commit**
-
 ```bash
 git add init/capabilities/*.drop.sql
 git commit -m "feat: add per-capability drop.sql fragments for removal"
@@ -85,9 +70,7 @@ git commit -m "feat: add per-capability drop.sql fragments for removal"
 
 **Files:** Modify `setup.sh`, `test/test_setup.sh`
 
-- [ ] **Step 1: Add failing test**
-
-Append to `test/test_setup.sh` before the summary block:
+- [ ] **Step 1: Add failing test** — append to `test/test_setup.sh` before the summary block:
 ```bash
 # --- meta: 04-meta.sql records enabled caps in p4a_meta schema ---
 gen '{"capabilities":{"document_store":true,"vector":true}}'
@@ -98,14 +81,9 @@ grep -q "('vector')" build/init/04-meta.sql && ok "meta has vector" || bad "meta
 grep -q "('api')" build/init/04-meta.sql && bad "meta must omit disabled api" || ok "meta omits api"
 ```
 
-- [ ] **Step 2: Run, verify failure**
+- [ ] **Step 2: Run, verify failure** — `./test/test_setup.sh` → these fail.
 
-Run: `./test/test_setup.sh`
-Expected: FAIL (04-meta.sql not generated).
-
-- [ ] **Step 3: Implement `04-meta.sql` generation**
-
-In `setup.sh`, immediately AFTER the `} > build/init/02-schema.sql` block (and before the `if [ "${EN[api]}" = 1 ]` roles/grants block), add:
+- [ ] **Step 3: Implement** — in `setup.sh`, immediately AFTER the `} > build/init/02-schema.sql` block and BEFORE the `if [ "${EN[api]}" = 1 ]` roles/grants block, add:
 ```bash
 # --- 04-meta.sql (records installed capabilities; lives in p4a_meta, never exposed by PostgREST) ---
 {
@@ -121,15 +99,10 @@ In `setup.sh`, immediately AFTER the `} > build/init/02-schema.sql` block (and b
   true
 } > build/init/04-meta.sql
 ```
-Note: filename `04-` makes it run after `03-api-grants.sql`. It is always generated, regardless of `api`.
 
-- [ ] **Step 4: Run, verify pass**
-
-Run: `./test/test_setup.sh`
-Expected: `FAIL=0`. Then inspect: `printf '{"capabilities":{"document_store":true,"api":true}}' >/tmp/m.json && ./setup.sh --dry-run /tmp/m.json && cat build/init/04-meta.sql` — confirm schema+table+inserts for document_store and api.
+- [ ] **Step 4: Run, verify pass** — `./test/test_setup.sh` → `FAIL=0`. Inspect: `printf '{"capabilities":{"document_store":true,"api":true}}' >/tmp/m.json && ./setup.sh --dry-run /tmp/m.json && cat build/init/04-meta.sql`.
 
 - [ ] **Step 5: Commit**
-
 ```bash
 git add setup.sh test/test_setup.sh
 git commit -m "feat: generate p4a_meta capability-tracking table on install"
@@ -137,17 +110,19 @@ git commit -m "feat: generate p4a_meta capability-tracking table on install"
 
 ---
 
-### Task 3: Arg parsing for update modes + fresh-install guard (TDD)
+### Task 3: setup.sh update-mode foundation (TDD)
+
+This task adds: robust arg parsing, unconditionally-declared maps, helper functions, secret preservation on update, and the **install/update branch split that REMOVES the pre-existing global dry-run early-exit** (a critical fix — otherwise update --dry-run never reaches update logic). The delta/SQL logic is stubbed and filled in Tasks 4–7.
 
 **Files:** Modify `setup.sh`; create `test/test_update.sh`
 
-- [ ] **Step 1: Create the update test harness with first assertions**
+- [ ] **Step 1: Create the update test harness**
 
-Create `test/test_update.sh`:
+Create `test/test_update.sh` (`chmod +x` it):
 ```bash
 #!/usr/bin/env bash
 # Update-mode tests. Drive setup.sh in `--update --dry-run --installed <csv>` mode,
-# which prints a plan + delta SQL without touching Docker or a database.
+# which prints a plan + per-phase delta SQL without touching Docker or a database.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 PROJ_ROOT="$PWD"
@@ -163,38 +138,24 @@ upd() {
   OUT="$(./setup.sh --update --dry-run --installed "$installed" "$@" "$cfg" 2>&1)"; local rc=$?
   rm -f "$cfg"; return $rc
 }
+# section <NAME>: extract the body printed between "===== NAME =====" and the next "===== " marker
+section() { awk -v s="===== $1 =====" '$0==s{f=1;next} /^===== /{f=0} f' <<<"$OUT"; }
 
 # --- flag wiring: --allow-drop without --update is an error ---
-out="$(./setup.sh --allow-drop --dry-run <<<'' 2>&1)"; rc=$?
-[ $rc -ne 0 ] && echo "$out" | grep -q 'allow-drop' && ok "--allow-drop requires --update" || bad "--allow-drop guard"
+cfg="$(mktemp)"; printf '{"capabilities":{"document_store":true}}' >"$cfg"
+out="$(./setup.sh --allow-drop --dry-run "$cfg" 2>&1)"; rc=$?
+{ [ $rc -ne 0 ] && echo "$out" | grep -q 'requires --update'; } && ok "--allow-drop requires --update" || bad "--allow-drop guard"
+rm -f "$cfg"
 
 echo "----"; echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ]
 ```
-Make it executable: `chmod +x test/test_update.sh`.
 
-- [ ] **Step 2: Run, verify failure**
+- [ ] **Step 2: Run, verify failure** — `./test/test_update.sh` → fails (no `requires --update` message yet; current script says `unknown option: --allow-drop`).
 
-Run: `./test/test_update.sh`
-Expected: FAIL (flags not yet handled).
+- [ ] **Step 3: Replace the arg-parse loop**
 
-- [ ] **Step 3: Implement arg parsing**
-
-In `setup.sh`, replace the existing arg-parse loop:
-```bash
-DRY_RUN=0
-CONFIG=""
-for arg in "$@"; do
-  case "$arg" in
-    --dry-run) DRY_RUN=1 ;;
-    --*) die "unknown option: $arg" ;;
-    *) CONFIG="$arg" ;;
-  esac
-done
-[ -n "$CONFIG" ] || CONFIG="config.json"
-[[ "$CONFIG" = /* ]] || CONFIG="$PWD/$CONFIG"
-```
-with:
+Replace the existing arg-parse block (the `for arg in "$@"` loop plus the two lines defaulting/absolutising `CONFIG`) with:
 ```bash
 DRY_RUN=0
 UPDATE=0
@@ -207,77 +168,162 @@ while [ $# -gt 0 ]; do
     --dry-run) DRY_RUN=1 ;;
     --update) UPDATE=1 ;;
     --allow-drop) ALLOW_DROP=1 ;;
-    --installed) shift; INSTALLED_CSV="${1:-}"; INSTALLED_GIVEN=1 ;;
+    --installed)
+      [ $# -ge 2 ] || die "--installed requires a value"
+      case "$2" in --*) die "--installed requires a value (got flag '$2')";; esac
+      INSTALLED_CSV="$2"; INSTALLED_GIVEN=1; shift ;;
     --installed=*) INSTALLED_CSV="${1#*=}"; INSTALLED_GIVEN=1 ;;
     --*) die "unknown option: $1" ;;
     *) CONFIG="$1" ;;
   esac
   shift
 done
-[ "$ALLOW_DROP" = 1 ] && [ "$UPDATE" = 0 ] && die "--allow-drop requires --update"
-[ "$INSTALLED_GIVEN" = 1 ] && [ "$UPDATE" = 0 ] && die "--installed requires --update"
+if [ "$ALLOW_DROP" = 1 ] && [ "$UPDATE" = 0 ]; then die "--allow-drop requires --update"; fi
+if [ "$INSTALLED_GIVEN" = 1 ] && [ "$UPDATE" = 0 ]; then die "--installed requires --update"; fi
 [ -n "$CONFIG" ] || CONFIG="config.json"
 [[ "$CONFIG" = /* ]] || CONFIG="$PWD/$CONFIG"
 ```
-Note the loop changed from `for arg in "$@"` to a `while` loop so `--installed <value>` can consume the next argument. The two `[ ... ] && [ ... ] && die` guard lines: under `set -e`, if the first test is false the compound returns non-zero — but these are NOT the last command before the next statement runs unconditionally, and bash does not exit-on-error for a `&&`-list whose left side is false in this position only if it's not the script's last command. To be safe, the implementer MUST verify a normal `./setup.sh --dry-run /tmp/x.json` still works; if it aborts, convert both guards to `if [ ... ] && [ ... ]; then die ...; fi`.
+(The `--installed` case validates a value exists and isn't another flag, avoiding the last-arg `shift` crash and the silent flag-eating. The two dependency guards use explicit `if/fi` so `set -e` can't mis-fire.)
 
-- [ ] **Step 4: Run, verify pass + no regression**
+- [ ] **Step 4: Declare maps + helpers near the top (after `die()` is defined, before generation)**
 
-Run: `./test/test_update.sh` → expect `PASS>=1 FAIL=0`.
-Run: `./test/test_setup.sh` → expect `FAIL=0` (install-mode unaffected).
-Sanity: `printf '{"capabilities":{"document_store":true}}' >/tmp/x.json && ./setup.sh --dry-run /tmp/x.json; echo exit=$?` → `config OK:` and exit 0.
-
-- [ ] **Step 5: Add the fresh-install guard (existing volume → refuse, point to --update)**
-
-A fresh `./setup.sh` (install mode, not dry-run) must refuse if the data volume already exists. The compose project is `build` (directory name), so the volume is `build_pgdata`. In `setup.sh`, find the final run section:
+Add:
 ```bash
+declare -A EXT_OF=( [search]=pg_trgm [vector]=vector [gis]=postgis [api]=pg_graphql )
+declare -A READ_TABLE=(
+  [document_store]=products [job_queue]=jobs [search]=articles
+  [vector]=documents [gis]=places [timeseries]=events [dashboards]=event_daily
+)
+
+_compose() { docker compose --env-file build/.env -f build/docker-compose.yml "$@"; }
+_pgdata_volume_name() { _compose config --format json 2>/dev/null | jq -r '.volumes.pgdata.name // empty'; }
+_db_cid() { _compose ps -q db 2>/dev/null; }
+_psql_q() { _compose exec -T db psql -tAqc "$1" -U "$PG_USER" -d "$PG_DB"; }
+_apply_sql() { _compose exec -T db psql -v ON_ERROR_STOP=1 --single-transaction -U "$PG_USER" -d "$PG_DB"; }
+
+_wait_db_healthy() {
+  local i cid
+  for i in $(seq 1 30); do
+    cid="$(_db_cid)"
+    if [ -n "$cid" ] && [ "$(docker inspect -f '{{.State.Health.Status}}' "$cid" 2>/dev/null)" = healthy ]; then
+      return 0
+    fi
+    sleep 2
+  done
+  die "database did not become healthy"
+}
+
+# up -d with rebuild + --remove-orphans, with a legacy-builder fallback for buildx < 0.17.
+_build_up() {
+  local err; err="$(mktemp)"
+  if _compose up -d --build --remove-orphans 2>"$err"; then rm -f "$err"; return 0; fi
+  if grep -qi 'buildx' "$err"; then
+    DOCKER_BUILDKIT=0 docker build -t postgres-everything:generated build/ \
+      && _compose up -d --no-build --remove-orphans
+  else
+    cat "$err" >&2; rm -f "$err"; die "docker build/up failed"
+  fi
+  rm -f "$err"
+}
+
+# Stubs (filled in later tasks):
+query_installed() { die "internal: query_installed not implemented"; }   # Task 7
+emit_pre_sql()    { :; }   # Task 5
+emit_add_sql()    { :; }   # Task 5
+emit_remove_sql() { :; }   # Task 6
+```
+Note: if Task 6 of the *install* plan left a local `declare -A READ_TABLE=(...)` inside the `if [ "${EN[api]}" = 1 ]` grants block, REMOVE that local declaration (the script-level one above now serves it). Verify the install-mode grants still generate correctly afterward (`./test/test_setup.sh` FAIL=0).
+
+- [ ] **Step 5: Preserve existing secrets on update (before `build/` is wiped)**
+
+Immediately BEFORE the `rm -rf build` line (which is after `cd "$(dirname "$0")"`), add:
+```bash
+# On update, reuse the existing install's secrets (regenerating them would break the
+# stored authenticator password / superuser password / JWT signing key).
+OLD_PG_PW=""; OLD_AUTH_PW=""; OLD_JWT=""
+if [ "$UPDATE" = 1 ] && [ -f build/.env ]; then
+  OLD_PG_PW="$(grep '^POSTGRES_PASSWORD=' build/.env | cut -d= -f2-)"
+  OLD_AUTH_PW="$(grep '^AUTHENTICATOR_PASSWORD=' build/.env | cut -d= -f2-)"
+  OLD_JWT="$(grep '^JWT_SECRET=' build/.env | cut -d= -f2-)"
+fi
+```
+Then in the `.env` secret-resolution code, change the precedence from "config else generate" to "config else OLD else generate". Concretely, where `PG_PW` is resolved:
+```bash
+PG_PW="$(jq -r '.postgres.password // ""' "$CONFIG")"
+[ -n "$PG_PW" ] || PG_PW="${OLD_PG_PW:-}"
+[ -n "$PG_PW" ] || { PG_PW="$(rand_secret)"; GEN_PG=1; }
+```
+and inside the `if [ "${EN[api]}" = 1 ]` block for `.env`:
+```bash
+AUTH_PW="$(jq -r '.api.authenticator_password // ""' "$CONFIG")"
+[ -n "$AUTH_PW" ] || AUTH_PW="${OLD_AUTH_PW:-}"
+[ -n "$AUTH_PW" ] || { AUTH_PW="$(openssl rand -hex 16)"; GEN_AUTH=1; }
+JWT="$(jq -r '.api.jwt_secret // ""' "$CONFIG")"
+[ -n "$JWT" ] || JWT="${OLD_JWT:-}"
+[ -n "$JWT" ] || { JWT="$(rand_secret)$(rand_secret)"; GEN_JWT=1; }
+```
+
+- [ ] **Step 6: Replace the run tail with the install/update branch split (removes the global dry-run exit)**
+
+Find and DELETE the existing global dry-run exit and run command at the end of `setup.sh`:
+```bash
+if [ "$DRY_RUN" -eq 1 ]; then
+  echo "dry-run: build/ generated, not starting Docker"
+  exit 0
+fi
+
 echo "starting stack..."
 docker compose --env-file build/.env -f build/docker-compose.yml up --build
 ```
-Replace with:
+Replace it with:
 ```bash
 if [ "$UPDATE" = 0 ]; then
-  if docker volume inspect build_pgdata >/dev/null 2>&1; then
-    die "an install already exists (volume build_pgdata). Use './setup.sh --update' to change capabilities, or 'docker compose -f build/docker-compose.yml down -v' to wipe it first."
+  # ---------- INSTALL MODE ----------
+  if [ "$DRY_RUN" = 1 ]; then echo "dry-run: build/ generated, not starting Docker"; exit 0; fi
+  vol="$(_pgdata_volume_name)"
+  if [ -n "$vol" ] && docker volume inspect "$vol" >/dev/null 2>&1; then
+    die "an install already exists (volume $vol). Use './setup.sh --update' to change capabilities, or 'docker compose -f build/docker-compose.yml down -v' to wipe it first."
   fi
   echo "starting stack..."
   docker compose --env-file build/.env -f build/docker-compose.yml up --build
   exit 0
 fi
 
-# --- update mode handled below (Tasks 4-7) ---
+# ---------- UPDATE MODE ----------
+# (delta computation + plan + dry-run print + live execution added in Tasks 4-7)
+echo "update: not yet implemented"
+exit 0
 ```
-(The update execution block is appended in later tasks. For now, update mode falls through to end-of-script — acceptable until Task 7.)
 
-- [ ] **Step 6: Run tests again**
+- [ ] **Step 7: Run tests + no regression**
 
-Run: `./test/test_setup.sh` and `./test/test_update.sh` → both `FAIL=0`. (These use `--dry-run`, which exits before the volume guard, so the guard does not affect them.)
+Run: `./test/test_update.sh` → `PASS>=1 FAIL=0`.
+Run: `./test/test_setup.sh` → `FAIL=0` (install dry-run still exits with `dry-run: build/ generated`).
+Sanity: `printf '{"capabilities":{"document_store":true}}' >/tmp/x.json && ./setup.sh --dry-run /tmp/x.json; echo exit=$?` → `config OK:` then `dry-run: build/ generated`, exit 0.
+Update dry-run reaches update branch: `./setup.sh --update --dry-run --installed 'document_store' /tmp/x.json` → prints `update: not yet implemented` (NOT `dry-run: build/ generated`).
 
-- [ ] **Step 7: Commit**
-
+- [ ] **Step 8: Commit**
 ```bash
 git add setup.sh test/test_update.sh
-git commit -m "feat: setup.sh update-mode flags and fresh-install guard"
+git commit -m "feat: update-mode flags, helpers, secret preservation, install/update branch split"
 ```
 
 ---
 
-### Task 4: Delta computation + plan output (TDD)
+### Task 4: Delta computation + plan + dry-run print scaffold (TDD)
 
 **Files:** Modify `setup.sh`, `test/test_update.sh`
 
-- [ ] **Step 1: Add failing tests**
-
-Append to `test/test_update.sh` before the summary:
+- [ ] **Step 1: Add failing tests** — append to `test/test_update.sh` before the summary:
 ```bash
-# --- plan: ADD set computed from installed vs target ---
+# --- plan: ADD computed from installed vs target ---
 upd '{"capabilities":{"document_store":true,"vector":true}}' 'document_store'
 echo "$OUT" | grep -q 'ADD: vector' && ok "plan ADD=vector" || bad "plan ADD"
 echo "$OUT" | grep -q 'REMOVE: (none)' && ok "plan REMOVE none" || bad "plan REMOVE none"
 
 # --- plan: REMOVE requires --allow-drop ---
 upd '{"capabilities":{"document_store":true}}' 'document_store,search'
-[ $? -ne 0 ] && echo "$OUT" | grep -q 'search' && ok "REMOVE without --allow-drop refuses" || bad "REMOVE refusal"
+{ [ $? -ne 0 ] && echo "$OUT" | grep -q 'search'; } && ok "REMOVE without --allow-drop refuses" || bad "REMOVE refusal"
 
 # --- plan: REMOVE allowed with --allow-drop ---
 upd '{"capabilities":{"document_store":true}}' 'document_store,search' --allow-drop
@@ -288,45 +334,21 @@ upd '{"capabilities":{"document_store":true}}' 'document_store'
 echo "$OUT" | grep -qi 'up to date' && ok "empty delta up-to-date" || bad "empty delta"
 ```
 
-- [ ] **Step 2: Run, verify failure**
+- [ ] **Step 2: Run, verify failure** — `./test/test_update.sh` → new assertions fail.
 
-Run: `./test/test_update.sh` → new assertions fail.
-
-- [ ] **Step 3: Implement delta computation + plan, gated to update mode**
-
-In `setup.sh`, AFTER the `04-meta.sql`/roles/grants/compose/.env generation (i.e. after `build/` is fully generated) and the secret-report block, but BEFORE the `if [ "$UPDATE" = 0 ]; then ... fresh install ... fi` block from Task 3 — restructure so update mode is handled in its own branch. Concretely, replace the Task-3 tail:
+- [ ] **Step 3: Implement the update branch** — replace the `# ---------- UPDATE MODE ----------` stub body (`echo "update: not yet implemented"; exit 0`) with:
 ```bash
-if [ "$UPDATE" = 0 ]; then
-  ... fresh install ...
-  exit 0
-fi
-# --- update mode handled below ---
-```
-with:
-```bash
-if [ "$UPDATE" = 0 ]; then
-  if [ "$DRY_RUN" = 1 ]; then
-    echo "dry-run: build/ generated, not starting Docker"
-    exit 0
-  fi
-  if docker volume inspect build_pgdata >/dev/null 2>&1; then
-    die "an install already exists (volume build_pgdata). Use './setup.sh --update' to change capabilities, or 'docker compose -f build/docker-compose.yml down -v' to wipe it first."
-  fi
-  echo "starting stack..."
-  docker compose --env-file build/.env -f build/docker-compose.yml up --build
-  exit 0
-fi
-
-# ===================== UPDATE MODE =====================
 # Determine INSTALLED set.
 if [ "$INSTALLED_GIVEN" = 1 ]; then
   installed_list="$INSTALLED_CSV"
 else
-  # query the running DB (Task 7 wires this up); placeholder for now:
+  vol="$(_pgdata_volume_name)"
+  if [ -z "$vol" ] || ! docker volume inspect "$vol" >/dev/null 2>&1; then
+    die "no existing install found (no pgdata volume). Run './setup.sh' for a fresh install."
+  fi
   installed_list="$(query_installed)"
 fi
 
-# Build associative set of installed caps.
 declare -A INST
 IFS=',' read -ra _inst <<< "$installed_list"
 for c in "${_inst[@]}"; do [ -n "$c" ] && INST[$c]=1; done
@@ -334,9 +356,8 @@ for c in "${_inst[@]}"; do [ -n "$c" ] && INST[$c]=1; done
 # Compute ADD / REMOVE in canonical order.
 ADD=(); REMOVE=()
 for c in "${CAPS[@]}"; do
-  tgt="${EN[$c]}"; ins="${INST[$c]:-0}"
-  [ "$tgt" = 1 ] && [ "$ins" != 1 ] && ADD+=("$c")
-  [ "$tgt" != 1 ] && [ "$ins" = 1 ] && REMOVE+=("$c")
+  if [ "${EN[$c]}" = 1 ] && [ "${INST[$c]:-0}" != 1 ]; then ADD+=("$c"); fi
+  if [ "${EN[$c]}" != 1 ] && [ "${INST[$c]:-0}" = 1 ]; then REMOVE+=("$c"); fi
 done
 
 echo "Update plan:"
@@ -346,368 +367,386 @@ echo "  REMOVE: ${REMOVE[*]:-(none)}"
 if [ "${#REMOVE[@]}" -gt 0 ] && [ "$ALLOW_DROP" = 0 ]; then
   die "removing capabilities (${REMOVE[*]}) is destructive; re-run with --allow-drop to confirm."
 fi
-
 if [ "${#ADD[@]}" -eq 0 ] && [ "${#REMOVE[@]}" -eq 0 ]; then
   echo "already up to date."
   exit 0
 fi
-```
-Add a stub `query_installed` near the top (real impl in Task 7):
-```bash
-query_installed() { die "live update not yet implemented"; }   # replaced in Task 7
-```
-The `[ ... ] && [ ... ] && X` lines inside the `for` loop are safe under `set -e` (loop body). If the implementer observes any abort, convert to `if`/`fi`.
 
-- [ ] **Step 4: Run, verify pass**
+# api orchestration flags
+api_added=0;   for c in "${ADD[@]}";    do [ "$c" = api ] && api_added=1;   done
+api_removed=0; for c in "${REMOVE[@]}"; do [ "$c" = api ] && api_removed=1; done
 
-Run: `./test/test_update.sh` → `FAIL=0`. Run `./test/test_setup.sh` → `FAIL=0`.
+if [ "$DRY_RUN" = 1 ]; then
+  echo "===== PRE ====="
+  [ "$api_added" = 1 ] && emit_pre_sql
+  echo "===== REMOVE ====="
+  [ "${#REMOVE[@]}" -gt 0 ] && emit_remove_sql
+  echo "===== ADD ====="
+  [ "${#ADD[@]}" -gt 0 ] && emit_add_sql
+  exit 0
+fi
+
+# live execution added in Task 7
+die "internal: live update execution not implemented"
+```
+The emit_* are still stubs (`:`) from Task 3, so dry-run prints empty sections for now — Tasks 5/6 fill them. The `[ "$api_added" = 1 ] && emit_pre_sql` lines are safe under `set -e` (the `&&` left side false is not the last command of the branch). If any abort is observed, convert to `if`/`fi`.
+
+- [ ] **Step 4: Run, verify pass** — `./test/test_update.sh` → `FAIL=0`. `./test/test_setup.sh` → `FAIL=0`.
 
 - [ ] **Step 5: Commit**
-
 ```bash
 git add setup.sh test/test_update.sh
-git commit -m "feat: update-mode delta computation and plan output"
+git commit -m "feat: update-mode delta computation, plan, and dry-run scaffold"
 ```
 
 ---
 
-### Task 5: ADD delta SQL generation (TDD)
+### Task 5: Phase-0 roles + ADD delta SQL (TDD)
 
 **Files:** Modify `setup.sh`, `test/test_update.sh`
 
-- [ ] **Step 1: Add failing tests**
-
-Append to `test/test_update.sh` before the summary:
+- [ ] **Step 1: Add failing tests** — append to `test/test_update.sh` before the summary (these assert WITHIN sections via the `section` helper, so an ADD-string can't satisfy a REMOVE assertion):
 ```bash
-# --- ADD SQL: new data cap, api not involved ---
+# --- ADD: new data cap, api not involved ---
 upd '{"capabilities":{"document_store":true,"vector":true},"seed_demo_data":true}' 'document_store'
-echo "$OUT" | grep -q 'CREATE EXTENSION IF NOT EXISTS vector' && ok "add: vector ext" || bad "add vector ext"
-echo "$OUT" | grep -q 'CREATE TABLE documents' && ok "add: documents schema" || bad "add documents"
-echo "$OUT" | grep -q 'INSERT INTO documents' && ok "add: vector seed" || bad "add vector seed"
-echo "$OUT" | grep -q 'CREATE TABLE products' && bad "add must not recreate products" || ok "add omits installed products"
-echo "$OUT" | grep -q "INSERT INTO p4a_meta.capabilities (cap) VALUES ('vector')" && ok "add: meta insert vector" || bad "add meta vector"
+section ADD | grep -q 'CREATE EXTENSION IF NOT EXISTS vector' && ok "add: vector ext" || bad "add vector ext"
+section ADD | grep -q 'CREATE TABLE documents' && ok "add: documents schema" || bad "add documents"
+section ADD | grep -q 'INSERT INTO documents' && ok "add: vector seed" || bad "add vector seed"
+section ADD | grep -q 'CREATE TABLE products' && bad "add must not recreate products" || ok "add omits installed products"
+section ADD | grep -q "INSERT INTO p4a_meta.capabilities (cap) VALUES ('vector')" && ok "add: meta insert vector" || bad "add meta vector"
 
-# --- ADD SQL: seed off ---
+# --- ADD: seed off ---
 upd '{"capabilities":{"document_store":true,"vector":true},"seed_demo_data":false}' 'document_store'
-echo "$OUT" | grep -q 'INSERT INTO documents' && bad "seed off must omit inserts" || ok "add: seed off"
+section ADD | grep -q 'INSERT INTO documents' && bad "seed off must omit inserts" || ok "add: seed off"
 
-# --- ADD SQL: api already installed, add data cap -> grant only new table ---
+# --- ADD: api already installed, add data cap -> grant the NEW table, after CREATE ---
 upd '{"capabilities":{"document_store":true,"search":true,"api":true}}' 'document_store,api'
-echo "$OUT" | grep -q 'GRANT SELECT ON articles TO anon, authenticated' && ok "add: grant new table only" || bad "add grant new table"
-echo "$OUT" | grep -q 'CREATE ROLE' && bad "must not recreate roles (api installed)" || ok "add: no role recreate"
+section ADD | grep -q 'GRANT SELECT ON articles TO anon, authenticated' && ok "add: grant new table" || bad "add grant new table"
+# CREATE TABLE articles must appear BEFORE its GRANT
+upd '{"capabilities":{"document_store":true,"search":true,"api":true}}' 'document_store,api'
+section ADD | awk '/CREATE TABLE articles/{c=NR} /GRANT SELECT ON articles/{g=NR} END{exit !(c&&g&&c<g)}' && ok "add: create-before-grant" || bad "add ordering"
+section PRE | grep -q 'CREATE ROLE' && bad "no role create when api already installed" || ok "add: no role recreate"
 
-# --- ADD SQL: api itself newly added -> roles + full grants + pg_graphql ---
+# --- ADD: api itself newly added -> Phase-0 roles (idempotent), Phase-3 pg_graphql + grants on installed tables ---
 upd '{"capabilities":{"document_store":true,"api":true},"api":{"authenticator_password":"apw"}}' 'document_store'
-echo "$OUT" | grep -q 'CREATE ROLE authenticator' && ok "add api: creates roles" || bad "add api roles"
-echo "$OUT" | grep -q 'CREATE EXTENSION IF NOT EXISTS pg_graphql' && ok "add api: pg_graphql" || bad "add api pg_graphql"
-echo "$OUT" | grep -q 'GRANT SELECT ON products TO anon, authenticated' && ok "add api: grants existing tables" || bad "add api grants"
+section PRE | grep -q "pg_roles WHERE rolname='authenticator'" && ok "add api: idempotent role create in PRE" || bad "add api roles"
+section ADD | grep -q 'CREATE EXTENSION IF NOT EXISTS pg_graphql' && ok "add api: pg_graphql" || bad "add api pg_graphql"
+section ADD | grep -q 'GRANT SELECT ON products TO anon, authenticated' && ok "add api: grants installed table" || bad "add api grants installed"
+section ADD | grep -q "INSERT INTO p4a_meta.capabilities (cap) VALUES ('api')" && ok "add api: meta insert" || bad "add api meta"
+
+# --- ADD: api + brand-new data cap together -> new table granted in ADD loop AFTER its create, NOT in the api block ---
+upd '{"capabilities":{"document_store":true,"vector":true,"api":true},"api":{"authenticator_password":"apw"}}' 'document_store'
+section ADD | awk '/CREATE TABLE documents/{c=NR} /GRANT SELECT ON documents/{g=NR} END{exit !(c&&g&&c<g)}' && ok "add api+new cap: documents create-before-grant" || bad "add api+new cap ordering"
 ```
 
-- [ ] **Step 2: Run, verify failure**
+- [ ] **Step 2: Run, verify failure** — `./test/test_update.sh` → new assertions fail (emit functions are still stubs).
 
-Run: `./test/test_update.sh` → new assertions fail (delta SQL not generated/printed).
-
-- [ ] **Step 3: Implement ADD SQL generation**
-
-In `setup.sh`, add an extension-map and read-table-map near the top (reuse if Task 6 of the install plan already defined them locally; otherwise define here as script-level associative arrays):
+- [ ] **Step 3: Implement `emit_pre_sql` and `emit_add_sql`** — replace the `emit_pre_sql() { :; }` and `emit_add_sql() { :; }` stubs with:
 ```bash
-declare -A EXT_OF=( [search]=pg_trgm [vector]=vector [gis]=postgis [api]=pg_graphql )
-declare -A READ_TABLE=(
-  [document_store]=products [job_queue]=jobs [search]=articles
-  [vector]=documents [gis]=places [timeseries]=events [dashboards]=event_daily
-)
-```
-Then add a function that emits the ADD delta SQL to stdout:
-```bash
+emit_pre_sql() {
+  # Roles, created idempotently on the CURRENT image BEFORE the rebuild (only when api is newly added),
+  # so PostgREST (started in Phase 2) finds the authenticator role.
+  local apw apw_esc
+  apw="$(grep '^AUTHENTICATOR_PASSWORD=' build/.env | cut -d= -f2-)"
+  apw_esc="${apw//\'/\'\'}"
+  cat <<SQL
+DO \$\$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='anon') THEN CREATE ROLE anon NOLOGIN; END IF; END \$\$;
+DO \$\$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='authenticated') THEN CREATE ROLE authenticated NOLOGIN; END IF; END \$\$;
+DO \$\$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='authenticator') THEN CREATE ROLE authenticator NOINHERIT LOGIN PASSWORD '${apw_esc}'; END IF; END \$\$;
+GRANT anon, authenticated TO authenticator;
+SQL
+}
+
 emit_add_sql() {
   local SEED; SEED="$(jq -r 'if .seed_demo_data == null then "true" else (.seed_demo_data|tostring) end' "$CONFIG")"
   local api_added=0; for c in "${ADD[@]}"; do [ "$c" = api ] && api_added=1; done
+  local api_eff=0; [ "${EN[api]}" = 1 ] && api_eff=1   # api present after this delta
 
-  # If api is newly added: create roles + pg_graphql + full grants for all target read-tables.
+  # api newly added: pg_graphql + schema grants + grants on ALREADY-INSTALLED read tables only
+  # (tables added in THIS delta are granted by the per-cap loop below, after their CREATE TABLE).
   if [ "$api_added" = 1 ]; then
-    local apw; apw="$(jq -r '.api.authenticator_password // ""' "$CONFIG")"
-    [ -n "$apw" ] || apw="$(jq -r '.api.authenticator_password // empty' "$CONFIG")"
-    # apw must be the value that build/.env uses; read it back from build/.env for consistency:
-    apw="$(grep '^AUTHENTICATOR_PASSWORD=' build/.env | cut -d= -f2-)"
-    local apw_esc="${apw//\'/\'\'}"   # double single-quotes for SQL literal
-    echo "CREATE ROLE anon NOLOGIN;"
-    echo "CREATE ROLE authenticated NOLOGIN;"
-    echo "CREATE ROLE authenticator NOINHERIT LOGIN PASSWORD '${apw_esc}';"
-    echo "GRANT anon, authenticated TO authenticator;"
     echo "CREATE EXTENSION IF NOT EXISTS pg_graphql;"
     echo "GRANT USAGE ON SCHEMA public TO anon, authenticated;"
     local rt=""
     for c in document_store job_queue search vector gis timeseries dashboards; do
-      [ "${EN[$c]}" = 1 ] && rt="${rt:+$rt, }${READ_TABLE[$c]}"
+      [ "${INST[$c]:-0}" = 1 ] && rt="${rt:+$rt, }${READ_TABLE[$c]}"
     done
     [ -n "$rt" ] && echo "GRANT SELECT ON $rt TO anon, authenticated;"
-    [ "${EN[auth]}" = 1 ] && echo "GRANT SELECT, INSERT, UPDATE, DELETE ON notes TO authenticated;"
+    [ "${INST[auth]:-0}" = 1 ] && echo "GRANT SELECT, INSERT, UPDATE, DELETE ON notes TO authenticated;"
     echo "GRANT USAGE ON SCHEMA graphql TO anon, authenticated;"
     echo "GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA graphql TO anon, authenticated;"
     echo "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO anon;"
   fi
 
-  # api already installed (not just added) -> incremental grants happen per-cap below.
-  local api_present=0
-  { [ "${EN[api]}" = 1 ] && [ "$api_added" = 0 ]; } && api_present=1
-
   local SCHEMA_ORDER=(document_store job_queue search vector gis timeseries dashboards auth)
   for c in "${SCHEMA_ORDER[@]}"; do
-    # only caps in ADD
     local in_add=0; for a in "${ADD[@]}"; do [ "$a" = "$c" ] && in_add=1; done
     [ "$in_add" = 1 ] || continue
-
     [ -n "${EXT_OF[$c]:-}" ] && echo "CREATE EXTENSION IF NOT EXISTS ${EXT_OF[$c]};"
     cat "init/capabilities/$c.schema.sql"; echo
-    if [ "$SEED" = "true" ] && [ -f "init/capabilities/$c.seed.sql" ]; then
-      cat "init/capabilities/$c.seed.sql"; echo
-    fi
-    # incremental grants when api was already present
-    if [ "$api_present" = 1 ]; then
+    if [ "$SEED" = "true" ] && [ -f "init/capabilities/$c.seed.sql" ]; then cat "init/capabilities/$c.seed.sql"; echo; fi
+    if [ "$api_eff" = 1 ]; then
       [ -n "${READ_TABLE[$c]:-}" ] && echo "GRANT SELECT ON ${READ_TABLE[$c]} TO anon, authenticated;"
       [ "$c" = auth ] && echo "GRANT SELECT, INSERT, UPDATE, DELETE ON notes TO authenticated;"
     fi
     echo "INSERT INTO p4a_meta.capabilities (cap) VALUES ('$c') ON CONFLICT (cap) DO NOTHING;"
   done
+
+  [ "$api_added" = 1 ] && echo "INSERT INTO p4a_meta.capabilities (cap) VALUES ('api') ON CONFLICT (cap) DO NOTHING;"
 }
 ```
-Then, in the update branch, after the "already up to date" check, print the delta under dry-run:
-```bash
-if [ "$DRY_RUN" = 1 ]; then
-  echo "----- delta SQL -----"
-  if [ "${#REMOVE[@]}" -gt 0 ]; then echo "-- REMOVE phase --"; emit_remove_sql; fi
-  if [ "${#ADD[@]}" -gt 0 ]; then echo "-- ADD phase --"; emit_add_sql; fi
-  exit 0
-fi
-```
-`emit_remove_sql` is defined in Task 6; for this task add a temporary stub `emit_remove_sql() { :; }` so the script parses, to be replaced in Task 6.
+`INST` is in scope (declared in the update branch before `emit_*` are called). The `\$\$` in the heredoc emits literal `$$`; `${apw_esc}` interpolates at generation time.
 
-Note on `api_added` password sourcing: it must equal what `build/.env` contains (which Task 7's Phase 2 feeds to the `postgrest` container), so read it from `build/.env` as shown. In `--dry-run --installed` mode `build/.env` was just generated, so the value exists.
-
-- [ ] **Step 4: Run, verify pass**
-
-Run: `./test/test_update.sh` → `FAIL=0`. Inspect a sample:
-`printf '{"capabilities":{"document_store":true,"api":true},"api":{"authenticator_password":"apw"}}' >/tmp/a.json && ./setup.sh --update --dry-run --installed 'document_store' /tmp/a.json`
-Confirm roles + pg_graphql + grants on products + meta insert for api.
+- [ ] **Step 4: Run, verify pass** — `./test/test_update.sh` → `FAIL=0`. Inspect both modes:
+`printf '{"capabilities":{"document_store":true,"vector":true,"api":true},"api":{"authenticator_password":"apw"}}' >/tmp/a.json && ./setup.sh --update --dry-run --installed 'document_store' /tmp/a.json` — confirm PRE has idempotent role DO-blocks, ADD has pg_graphql + grants on products (installed) + CREATE TABLE documents then GRANT documents (new) + meta inserts.
 
 - [ ] **Step 5: Commit**
-
 ```bash
 git add setup.sh test/test_update.sh
-git commit -m "feat: update-mode ADD delta SQL generation"
+git commit -m "feat: update-mode Phase-0 roles and ADD delta SQL (grant-after-create)"
 ```
 
 ---
 
-### Task 6: REMOVE delta SQL generation (TDD)
+### Task 6: REMOVE delta SQL (TDD)
 
 **Files:** Modify `setup.sh`, `test/test_update.sh`
 
-- [ ] **Step 1: Add failing tests**
-
-Append to `test/test_update.sh` before the summary:
+- [ ] **Step 1: Add failing tests** — append to `test/test_update.sh` before the summary:
 ```bash
-# --- REMOVE SQL: drop fragment + drop extension + meta delete ---
+# --- REMOVE: drop fragment + drop extension + meta delete ---
 upd '{"capabilities":{"document_store":true}}' 'document_store,search' --allow-drop
-echo "$OUT" | grep -q 'DROP TABLE IF EXISTS articles CASCADE' && ok "remove: drop articles" || bad "remove drop table"
-echo "$OUT" | grep -q 'DROP EXTENSION IF EXISTS pg_trgm' && ok "remove: drop pg_trgm" || bad "remove drop ext"
-echo "$OUT" | grep -q "DELETE FROM p4a_meta.capabilities WHERE cap = 'search'" && ok "remove: meta delete" || bad "remove meta delete"
+section REMOVE | grep -q 'DROP TABLE IF EXISTS articles CASCADE' && ok "remove: drop articles" || bad "remove drop table"
+section REMOVE | grep -q 'DROP EXTENSION IF EXISTS pg_trgm' && ok "remove: drop pg_trgm" || bad "remove drop ext"
+section REMOVE | grep -q "DELETE FROM p4a_meta.capabilities WHERE cap = 'search'" && ok "remove: meta delete" || bad "remove meta delete"
 
-# --- REMOVE SQL: removing api drops roles + pg_graphql ---
-upd '{"capabilities":{"document_store":true}}' 'document_store,api' --allow-drop
-echo "$OUT" | grep -q 'DROP EXTENSION IF EXISTS pg_graphql' && ok "remove api: pg_graphql" || bad "remove api ext"
-echo "$OUT" | grep -qE 'DROP ROLE (IF EXISTS )?authenticator' && ok "remove api: drops roles" || bad "remove api roles"
-
-# --- REMOVE SQL: data cap without its own ext does not emit DROP EXTENSION ---
+# --- REMOVE: data cap without its own extension does not emit DROP EXTENSION ---
 upd '{"capabilities":{"search":true}}' 'search,document_store' --allow-drop
-echo "$OUT" | grep -q 'DROP TABLE IF EXISTS products CASCADE' && ok "remove: drop products" || bad "remove products"
-echo "$OUT" | grep -qE 'DROP EXTENSION' && bad "document_store has no ext to drop" || ok "remove: no spurious ext drop"
+section REMOVE | grep -q 'DROP TABLE IF EXISTS products CASCADE' && ok "remove: drop products" || bad "remove products"
+section REMOVE | grep -qE 'DROP EXTENSION' && bad "document_store has no ext to drop" || ok "remove: no spurious ext drop"
+
+# --- REMOVE api: REVOKE default-priv BEFORE drop role; drop roles + pg_graphql; single pg_graphql drop ---
+upd '{"capabilities":{"document_store":true}}' 'document_store,api' --allow-drop
+section REMOVE | grep -q 'ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE SELECT ON TABLES FROM anon' && ok "remove api: revoke default priv" || bad "remove api revoke"
+section REMOVE | awk '/REVOKE SELECT ON TABLES FROM anon/{r=NR} /DROP ROLE IF EXISTS anon/{d=NR} END{exit !(r&&d&&r<d)}' && ok "remove api: revoke before drop role" || bad "remove api revoke-order"
+section REMOVE | grep -q 'DROP EXTENSION IF EXISTS pg_graphql' && ok "remove api: drop pg_graphql" || bad "remove api ext"
+[ "$(upd '{"capabilities":{"document_store":true}}' 'document_store,api' --allow-drop; section REMOVE | grep -c 'DROP EXTENSION IF EXISTS pg_graphql')" = 1 ] && ok "remove api: pg_graphql dropped once" || bad "remove api ext double-drop"
+section REMOVE | grep -qE 'DROP ROLE IF EXISTS authenticator' && ok "remove api: drops roles" || bad "remove api roles"
 ```
 
-- [ ] **Step 2: Run, verify failure**
+- [ ] **Step 2: Run, verify failure** — `./test/test_update.sh` → new assertions fail.
 
-Run: `./test/test_update.sh` → new assertions fail.
-
-- [ ] **Step 3: Implement REMOVE SQL generation**
-
-Replace the temporary `emit_remove_sql() { :; }` stub with:
+- [ ] **Step 3: Implement `emit_remove_sql`** — replace the `emit_remove_sql() { :; }` stub with:
 ```bash
 emit_remove_sql() {
   local api_removed=0; for c in "${REMOVE[@]}"; do [ "$c" = api ] && api_removed=1; done
   local SCHEMA_ORDER=(document_store job_queue search vector gis timeseries dashboards auth)
-  # reverse canonical order for drops
-  local i
+  local i c r in_rem
   for (( i=${#SCHEMA_ORDER[@]}-1 ; i>=0 ; i-- )); do
-    local c="${SCHEMA_ORDER[$i]}"
-    local in_rem=0; for r in "${REMOVE[@]}"; do [ "$r" = "$c" ] && in_rem=1; done
+    c="${SCHEMA_ORDER[$i]}"
+    in_rem=0; for r in "${REMOVE[@]}"; do [ "$r" = "$c" ] && in_rem=1; done
     [ "$in_rem" = 1 ] || continue
     cat "init/capabilities/$c.drop.sql"; echo
     [ -n "${EXT_OF[$c]:-}" ] && echo "DROP EXTENSION IF EXISTS ${EXT_OF[$c]};"
     echo "DELETE FROM p4a_meta.capabilities WHERE cap = '$c';"
   done
   if [ "$api_removed" = 1 ]; then
-    echo "DROP EXTENSION IF EXISTS pg_graphql;"
+    # The ALTER DEFAULT PRIVILEGES ... TO anon ACL is superuser-owned, so DROP OWNED BY anon
+    # does NOT clear it; revoke it first or DROP ROLE anon fails on the dependency.
+    echo "ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE SELECT ON TABLES FROM anon;"
     echo "DROP OWNED BY authenticator, anon, authenticated;"
     echo "DROP ROLE IF EXISTS authenticator;"
     echo "DROP ROLE IF EXISTS authenticated;"
     echo "DROP ROLE IF EXISTS anon;"
+    echo "DROP EXTENSION IF EXISTS pg_graphql;"
     echo "DELETE FROM p4a_meta.capabilities WHERE cap = 'api';"
   fi
 }
 ```
-Note: `api` is in `CAPS` but NOT in `SCHEMA_ORDER`, so the loop skips it; the `api_removed` block handles roles/pg_graphql/meta for api. `EXT_OF[api]=pg_graphql`, but since api isn't in SCHEMA_ORDER the loop won't emit a duplicate `DROP EXTENSION pg_graphql` — only the `api_removed` block does. Verify no double-drop.
+`api` is not in `SCHEMA_ORDER`, so the loop never emits a `DROP EXTENSION pg_graphql`; only the `api_removed` block does (single drop).
 
-- [ ] **Step 4: Run, verify pass**
-
-Run: `./test/test_update.sh` → `FAIL=0`. Inspect:
-`printf '{"capabilities":{"document_store":true}}' >/tmp/r.json && ./setup.sh --update --dry-run --installed 'document_store,search,api' /tmp/r.json --allow-drop` — confirm drop order (search dropped; api roles dropped), single pg_graphql drop, meta deletes.
+- [ ] **Step 4: Run, verify pass** — `./test/test_update.sh` → `FAIL=0`. Inspect: `printf '{"capabilities":{"document_store":true}}' >/tmp/r.json && ./setup.sh --update --dry-run --installed 'document_store,search,api' /tmp/r.json --allow-drop`.
 
 - [ ] **Step 5: Commit**
-
 ```bash
 git add setup.sh test/test_update.sh
-git commit -m "feat: update-mode REMOVE delta SQL generation"
+git commit -m "feat: update-mode REMOVE delta SQL (revoke-before-drop for api)"
 ```
 
 ---
 
-### Task 7: Live three-phase execution (no unit test; covered by Task 8 e2e)
+### Task 7: Live phased execution (no unit test; covered by Task 8 e2e)
 
 **Files:** Modify `setup.sh`
 
-- [ ] **Step 1: Implement `query_installed` and the three-phase apply**
+- [ ] **Step 1: Implement `query_installed` and the phased execution**
 
-Replace the `query_installed` stub with a real implementation, and add the execution block after the dry-run `exit 0` in the update branch:
+Replace the `query_installed() { die ...; }` stub with:
 ```bash
 query_installed() {
-  # Ensure db is up (no --build, so no re-init), then read the metadata table.
-  docker compose --env-file build/.env -f build/docker-compose.yml up -d 2>/dev/null || true
+  # Start ONLY db (not postgrest, whose role may not exist yet); --remove-orphans clears a
+  # now-absent postgrest. Volume already confirmed to exist by the caller.
+  _compose up -d --remove-orphans db
   _wait_db_healthy
-  if ! docker compose --env-file build/.env -f build/docker-compose.yml \
-        exec -T db psql -tAqc "SELECT to_regclass('p4a_meta.capabilities')" 2>/dev/null | grep -q capabilities; then
-    die "no p4a_meta.capabilities table found — this does not look like a managed install. (Was it created before the update feature? Re-create it or migrate manually.)"
-  fi
-  docker compose --env-file build/.env -f build/docker-compose.yml \
-    exec -T db psql -tAqc "SELECT string_agg(cap, ',') FROM p4a_meta.capabilities" 2>/dev/null | tr -d '[:space:]'
-}
-
-_wait_db_healthy() {
-  local i
-  for i in $(seq 1 30); do
-    docker compose --env-file build/.env -f build/docker-compose.yml ps --format '{{.Health}}' db 2>/dev/null | grep -q healthy && return 0
-    sleep 2
-  done
-  die "database did not become healthy"
-}
-
-_apply_sql() { # reads SQL from stdin, applies as one transaction
-  docker compose --env-file build/.env -f build/docker-compose.yml \
-    exec -T db psql -v ON_ERROR_STOP=1 --single-transaction \
-    -U "$POSTGRES_USER" -d "$POSTGRES_DB"
+  local reg; reg="$(_psql_q "SELECT to_regclass('p4a_meta.capabilities')")"
+  [ "$reg" = "p4a_meta.capabilities" ] || die "no p4a_meta.capabilities table — this does not look like a managed install."
+  _psql_q "SELECT string_agg(cap, ',') FROM p4a_meta.capabilities" | tr -d '[:space:]'
 }
 ```
-Note `POSTGRES_USER`/`POSTGRES_DB` are read from `build/.env` values already in scope (`PG_USER`, `PG_DB` variables from the .env generation); use those (`-U "$PG_USER" -d "$PG_DB"`). Confirm the variable names against the generated section and use the correct ones.
 
-Then the live execution (after the `if [ "$DRY_RUN" = 1 ]; then ... exit 0; fi` delta-print block):
+Replace the `die "internal: live update execution not implemented"` line (end of the update branch) with:
 ```bash
-# Phase 1: drops on the CURRENT image (extension binaries still present)
-if [ "${#REMOVE[@]}" -gt 0 ]; then
-  echo "phase 1: applying removals..."
-  emit_remove_sql | _apply_sql
-fi
-
-# Phase 2: rebuild + recreate (volume preserved; postgrest added/removed to match)
-echo "phase 2: rebuilding image and recreating container..."
-docker compose --env-file build/.env -f build/docker-compose.yml up -d --build
+# Ensure db is up on the current image (query_installed already did this for the live path;
+# harmless to repeat). --remove-orphans removes a now-absent postgrest before we touch roles.
+_compose up -d --remove-orphans db
 _wait_db_healthy
 
-# Phase 3: adds on the NEW image (new binaries present)
+# Phase 0: roles before the rebuild (only when api is newly added)
+if [ "$api_added" = 1 ]; then echo "phase 0: creating role chain..."; emit_pre_sql | _apply_sql; fi
+
+# Phase 1: drops on the current image (binaries still present)
+if [ "${#REMOVE[@]}" -gt 0 ]; then echo "phase 1: applying removals..."; emit_remove_sql | _apply_sql; fi
+
+# Phase 2: rebuild + recreate (named volume preserved; orphan postgrest removed)
+echo "phase 2: rebuilding image and recreating container..."
+_build_up
+_wait_db_healthy
+
+# Phase 3: adds on the new image (new binaries present)
 if [ "${#ADD[@]}" -gt 0 ]; then
   echo "phase 3: applying additions..."
   emit_add_sql | _apply_sql
+  # PostgREST started in Phase 2; make it reload its schema cache for the new grants.
+  [ "$api_added" = 1 ] && _compose restart postgrest >/dev/null 2>&1 || true
 fi
 
-echo "update complete. installed: $(docker compose --env-file build/.env -f build/docker-compose.yml exec -T db psql -tAqc 'SELECT string_agg(cap, \", \") FROM p4a_meta.capabilities')"
+echo "update complete. installed: $(_psql_q "SELECT string_agg(cap, ', ' ORDER BY cap) FROM p4a_meta.capabilities")"
 ```
+Note the final report uses `_psql_q` (clean, no shell-escaped quotes). `PG_USER`/`PG_DB` are in scope from `.env` generation.
 
-- [ ] **Step 2: Static check + no-regression**
+- [ ] **Step 2: Static check + no regression**
 
-Run `bash -n setup.sh` → no syntax errors.
-Run `./test/test_update.sh` and `./test/test_setup.sh` → both `FAIL=0` (dry-run paths exit before any Docker call; the live code is not exercised).
+Run: `bash -n setup.sh` → no syntax errors.
+Run: `./test/test_update.sh` and `./test/test_setup.sh` → both `FAIL=0` (dry-run exits before any Docker call; live code not exercised).
 
 - [ ] **Step 3: Commit**
-
 ```bash
 git add setup.sh
-git commit -m "feat: live three-phase update execution (drop -> rebuild -> add)"
+git commit -m "feat: live phased update execution (roles -> drop -> rebuild -> add)"
 ```
 
 ---
 
-### Task 8: End-to-end Docker verification (data preservation)
+### Task 8: End-to-end Docker verification (data preservation + edge cases)
 
-**Files:** none (verification only). Uses the legacy-builder fallback if buildx < 0.17.0 (`DOCKER_BUILDKIT=0 docker build -t postgres-everything:generated build/`).
+**Files:** none (verification only). The script's own `_build_up` includes the buildx<0.17 fallback, so `./setup.sh --update` works on this machine without manual builds.
 
-- [ ] **Step 1: Fresh install of a minimal config, insert a sentinel row**
+Helper for all steps:
+```bash
+DC() { docker compose --env-file build/.env -f build/docker-compose.yml "$@"; }
+Q()  { DC exec -T db psql -U postgres -d app -tAc "$1"; }
+```
 
+- [ ] **Step 1: Fresh install of `document_store`, insert a sentinel + verify seed count**
 ```bash
 cat > config.json <<'JSON'
 { "postgres": { "password": "upd_e2e" }, "seed_demo_data": true,
   "capabilities": { "document_store": true } }
 JSON
-./setup.sh --dry-run config.json            # generate build/
-DOCKER_BUILDKIT=0 docker build -t postgres-everything:generated build/   # if buildx is old
-docker compose --env-file build/.env -f build/docker-compose.yml up -d --no-build
-# wait healthy, then insert sentinel:
-docker compose --env-file build/.env -f build/docker-compose.yml exec -T db \
-  psql -U postgres -d app -c "INSERT INTO products(name) VALUES ('SENTINEL-ROW');"
-docker compose --env-file build/.env -f build/docker-compose.yml exec -T db \
-  psql -U postgres -d app -tAc "SELECT cap FROM p4a_meta.capabilities;"   # -> document_store
+./setup.sh --dry-run config.json
+DOCKER_BUILDKIT=0 docker build -t postgres-everything:generated build/   # this machine's buildx is old
+DC up -d --no-build
+# wait healthy, then:
+Q "INSERT INTO products(name) VALUES ('SENTINEL-ROW');"
+Q "SELECT count(*) FROM products;"                 # -> 3 (2 seed + sentinel)
+Q "SELECT string_agg(cap,',' ORDER BY cap) FROM p4a_meta.capabilities;"   # -> document_store
 ```
 
-- [ ] **Step 2: Update to add `vector` — assert data survives**
-
+- [ ] **Step 2: Add `vector` (base stays postgres:17) — assert data + seed survive**
 ```bash
 cat > config.json <<'JSON'
 { "postgres": { "password": "upd_e2e" }, "seed_demo_data": true,
   "capabilities": { "document_store": true, "vector": true } }
 JSON
-# Use the legacy builder path: run setup up to phase 2 then build manually if needed.
-# If buildx is current, just: ./setup.sh --update config.json
 ./setup.sh --update config.json
-# Assertions:
-docker compose --env-file build/.env -f build/docker-compose.yml exec -T db \
-  psql -U postgres -d app -tAc "SELECT count(*) FROM products WHERE name='SENTINEL-ROW';"  # -> 1
-docker compose --env-file build/.env -f build/docker-compose.yml exec -T db \
-  psql -U postgres -d app -tAc "SELECT to_regclass('public.documents');"                    # -> documents
-docker compose --env-file build/.env -f build/docker-compose.yml exec -T db \
-  psql -U postgres -d app -tAc "SELECT string_agg(cap,',' ORDER BY cap) FROM p4a_meta.capabilities;" # -> document_store,vector
+Q "SELECT count(*) FROM products WHERE name='SENTINEL-ROW';"               # -> 1 (PRESERVED)
+Q "SELECT count(*) FROM products;"                                        # -> 3 (unchanged)
+Q "SELECT to_regclass('public.documents');"                               # -> documents
+Q "SELECT count(*) FROM documents;"                                       # -> 3 (vector seed loaded)
+Q "SELECT string_agg(cap,',' ORDER BY cap) FROM p4a_meta.capabilities;"   # -> document_store,vector
 ```
-Expected: sentinel row count `1` (DATA PRESERVED), `documents` table now exists, metadata lists both caps.
 
-Note: if buildx < 0.17.0 makes `./setup.sh --update`'s internal `up -d --build` fail at Phase 2, document it as an environment limitation and perform Phase 2 manually: `DOCKER_BUILDKIT=0 docker build -t postgres-everything:generated build/ && docker compose ... up -d --no-build`, then re-run the Phase 3 SQL. Record the workaround in the report.
-
-- [ ] **Step 3: Remove `vector` with --allow-drop — assert documents gone, products intact**
-
+- [ ] **Step 3: Add `api` + a brand-new data cap (`search`) together — exercises the grant-ordering fix**
 ```bash
 cat > config.json <<'JSON'
 { "postgres": { "password": "upd_e2e" }, "seed_demo_data": true,
-  "capabilities": { "document_store": true } }
+  "capabilities": { "document_store": true, "vector": true, "search": true, "api": true } }
+JSON
+./setup.sh --update config.json
+# Phase 3 must NOT abort (articles granted after CREATE; products/documents granted as installed):
+Q "SELECT string_agg(cap,',' ORDER BY cap) FROM p4a_meta.capabilities;"   # -> api,document_store,search,vector
+# PostgREST now serves; authenticator role exists (Phase 0):
+sleep 3; curl -s http://127.0.0.1:3000/products | head -c 80; echo
+Q "SELECT 1 FROM information_schema.role_table_grants WHERE table_name='articles' AND grantee='anon' LIMIT 1;"  # -> 1
+```
+
+- [ ] **Step 4: Add `gis` — base-image swap postgres:17 -> postgis/postgis:17-3.5 over the populated volume**
+```bash
+cat > config.json <<'JSON'
+{ "postgres": { "password": "upd_e2e" }, "seed_demo_data": true,
+  "capabilities": { "document_store": true, "vector": true, "search": true, "api": true, "gis": true } }
+JSON
+./setup.sh --update config.json
+Q "SELECT count(*) FROM products WHERE name='SENTINEL-ROW';"   # -> 1 (data survived base-image swap)
+Q "SELECT to_regclass('public.places');"                      # -> places
+Q "SELECT extname FROM pg_extension WHERE extname='postgis';"  # -> postgis
+```
+
+- [ ] **Step 5: Idempotent re-run — `--update` with no change is a no-op**
+```bash
+out="$(./setup.sh --update config.json 2>&1)"; echo "$out" | grep -qi 'up to date' && echo "OK: idempotent no-op"
+```
+
+- [ ] **Step 6: Remove `api` with `--allow-drop` — roles dropped cleanly, postgrest removed, data intact**
+```bash
+cat > config.json <<'JSON'
+{ "postgres": { "password": "upd_e2e" }, "seed_demo_data": true,
+  "capabilities": { "document_store": true, "vector": true, "search": true, "gis": true } }
 JSON
 ./setup.sh --update --allow-drop config.json
-docker compose --env-file build/.env -f build/docker-compose.yml exec -T db \
-  psql -U postgres -d app -tAc "SELECT to_regclass('public.documents');"      # -> (empty)
-docker compose --env-file build/.env -f build/docker-compose.yml exec -T db \
-  psql -U postgres -d app -tAc "SELECT count(*) FROM products WHERE name='SENTINEL-ROW';"  # -> 1
+Q "SELECT count(*) FROM pg_roles WHERE rolname IN ('anon','authenticated','authenticator');"  # -> 0
+Q "SELECT count(*) FROM products WHERE name='SENTINEL-ROW';"   # -> 1 (intact)
+DC ps --format '{{.Service}}' | grep -q postgrest && echo "FAIL: postgrest lingers" || echo "OK: postgrest removed"
 ```
-Expected: `documents` gone, sentinel still `1`, metadata back to `document_store`.
 
-- [ ] **Step 4: Tear down**
-
+- [ ] **Step 7: Remove `vector` with `--allow-drop` — documents gone, products intact**
 ```bash
-docker compose --env-file build/.env -f build/docker-compose.yml down -v
+cat > config.json <<'JSON'
+{ "postgres": { "password": "upd_e2e" }, "seed_demo_data": true,
+  "capabilities": { "document_store": true, "search": true, "gis": true } }
+JSON
+./setup.sh --update --allow-drop config.json
+Q "SELECT to_regclass('public.documents');"                    # -> (empty)
+Q "SELECT count(*) FROM products WHERE name='SENTINEL-ROW';"   # -> 1
+Q "SELECT extname FROM pg_extension WHERE extname='vector';"   # -> (empty)
+```
+
+- [ ] **Step 8: Guard checks — fresh install refuses on existing volume; update refuses with no install**
+```bash
+./setup.sh config.json 2>&1 | grep -qi 'already exists' && echo "OK: fresh-install guard fires"
+# (no-install refusal) in a throwaway empty project dir:
+( tmp="$(mktemp -d)"; cp -r init setup.sh "$tmp"/; cd "$tmp"; \
+  printf '{"capabilities":{"document_store":true}}' > config.json; \
+  ./setup.sh --update config.json 2>&1 | grep -qi 'no existing install' && echo "OK: update no-install guard"; \
+  rm -rf "$tmp" )
+```
+
+- [ ] **Step 9: Tear down**
+```bash
+DC down -v
 rm -f config.json
 ```
+Record every assertion's actual output in the report. If any check fails, STOP and report (do not paper over).
 
 ---
 
@@ -715,48 +754,46 @@ rm -f config.json
 
 **Files:** Modify `README.md`, `CLAUDE.md`
 
-- [ ] **Step 1: README — add an "Updating an existing install" subsection**
-
-After the `## Run it` section in `README.md`, add:
+- [ ] **Step 1: README — add "Updating an existing install" after `## Run it`**
 ```markdown
 ### Updating an existing install
 
-To change capabilities on a running install WITHOUT wiping data, edit `config.json` and run:
+Change capabilities on a running install WITHOUT wiping data — edit `config.json`, then:
 
 ```bash
 ./setup.sh --update              # add newly-enabled capabilities (non-destructive)
-./setup.sh --update --allow-drop # also drop capabilities you removed from config (destroys their data)
+./setup.sh --update --allow-drop # also drop capabilities removed from config (destroys their data)
 ```
 
 `--update` diffs your config against the capabilities recorded in the database (`p4a_meta.capabilities`)
-and applies only the difference, in three phases: drop removed capabilities, rebuild and recreate the
-container (the `pgdata` volume is preserved, so existing data survives), then add new capabilities. Each
-phase is a single transaction. Preview without touching anything:
+and applies only the difference: create the API role chain if needed, drop removed capabilities, rebuild
+and recreate the container (the `pgdata` volume is preserved, so existing data survives), then add new
+capabilities — each step a single transaction. Existing secrets in `build/.env` are reused, so the
+superuser password, the PostgREST authenticator password, and the JWT key stay stable across updates.
+
+Preview a delta without touching anything:
 `./setup.sh --update --dry-run --installed "document_store" config.json`.
 
-A plain `./setup.sh` refuses to run if an install already exists — use `--update`, or
+A plain `./setup.sh` refuses if an install already exists — use `--update`, or
 `docker compose -f build/docker-compose.yml down -v` to deliberately start over.
 ```
 
-- [ ] **Step 2: CLAUDE.md — document the update path in the provisioning model section**
-
-In `CLAUDE.md`, append to the `## Provisioning model` section a short paragraph:
+- [ ] **Step 2: CLAUDE.md — append to the `## Provisioning model` section**
 ```markdown
 **Updating in place:** `./setup.sh --update` (add) / `--update --allow-drop` (add + remove) changes
-capabilities on a running install without `down -v`. It reads the installed set from
-`p4a_meta.capabilities` (a dedicated schema, never exposed by PostgREST), computes ADD/REMOVE, and
-applies a delta in three phases: drops on the current image → `up -d --build` (volume preserved) → adds
-on the new image, each a single `psql --single-transaction`. Per-capability teardown lives in
-`init/capabilities/<cap>.drop.sql`. Update-mode logic is unit-tested by `test/test_update.sh` via
-`--update --dry-run --installed "<csv>"` (no Docker).
+capabilities without `down -v`. It reads the installed set from `p4a_meta.capabilities` (a dedicated
+schema, never exposed by PostgREST), computes ADD/REMOVE, and applies a delta in phases: Phase 0 creates
+the role chain (idempotent, before the rebuild so PostgREST doesn't crash-loop) → Phase 1 drops on the
+current image → `up -d --build --remove-orphans` (volume preserved) → Phase 3 adds on the new image,
+each a single `psql --single-transaction`. Tables are always granted AFTER they're created; removing
+`api` REVOKEs the superuser-owned default-priv ACL before dropping `anon`. Update secrets are reused
+from the prior `build/.env`. Per-capability teardown lives in `init/capabilities/<cap>.drop.sql`.
+Update logic is unit-tested by `test/test_update.sh` via `--update --dry-run --installed "<csv>"`.
 ```
 
-- [ ] **Step 3: Verify both test suites still pass**
-
-Run: `./test/test_setup.sh` and `./test/test_update.sh` → both `FAIL=0`.
+- [ ] **Step 3: Verify** — `./test/test_setup.sh` and `./test/test_update.sh` → both `FAIL=0`.
 
 - [ ] **Step 4: Commit**
-
 ```bash
 git add README.md CLAUDE.md
 git commit -m "docs: document the --update capability path"
@@ -766,11 +803,12 @@ git commit -m "docs: document the --update capability path"
 
 ## Self-Review
 
-**Spec coverage:** metadata table (Task 2), command surface + flags + fresh-install guard (Task 3), delta computation + plan + REMOVE refusal (Task 4), ADD SQL incl. api-add vs table-add grants + seed toggle (Task 5), REMOVE SQL incl. api removal (Task 6), three-phase live execution + ordering (Task 7), drop.sql fragments (Task 1), data-preservation e2e (Task 8), docs (Task 9). All spec sections map to tasks.
+**Spec coverage:** drop fragments (T1), metadata table (T2), flags + helpers + secret preservation + branch split + guards (T3), delta/plan/refusal/up-to-date (T4), Phase-0 roles + ADD SQL + grant-after-create (T5), REMOVE SQL + revoke-before-drop (T6), phased live execution + `--remove-orphans` + buildkit fallback + postgrest restart (T7), data-preservation + all edge-case e2e incl. base-image swap, api add/remove, idempotent re-run, guards (T8), docs (T9). All spec sections map to tasks.
 
-**Placeholder scan:** stubs (`query_installed`, `emit_remove_sql`) are explicitly introduced then replaced in a later task within the same plan — each replacement is shown in full. No "TBD"/"implement later".
+**Hardening fixes verified present:** global dry-run exit removed (T3 S6); Phase-0 idempotent roles before rebuild (T5, T7); grant-after-create ordering with create-before-grant tests (T5 S1); `REVOKE` before `DROP ROLE anon` with order test (T6 S1); `PG_USER`/`PG_DB` in `_apply_sql`/`_psql_q` (T3 S4); secret preservation (T3 S5); `--remove-orphans` (T3 S4 `_build_up`, T7); robust volume name via `compose config` (T3 S4); require-volume guard (T4 S3); buildkit fallback in `_build_up` (T3 S4); portable healthcheck via `docker inspect` (T3 S4); `--installed` last-arg + flag-eating guards (T3 S3); maps declared unconditionally (T3 S4); phase-split `section` test helper to prevent cross-section false positives (T3 S1, used T5/T6).
 
-**Type/name consistency:** `EN[...]`, `INST[...]`, `ADD`/`REMOVE` arrays, `EXT_OF`/`READ_TABLE` maps, `emit_add_sql`/`emit_remove_sql`/`query_installed`/`_apply_sql`/`_wait_db_healthy`, `p4a_meta.capabilities`, canonical order and reverse-order for drops — all consistent across tasks. `PG_USER`/`PG_DB` vs `POSTGRES_USER`/`POSTGRES_DB`: Task 7 Step 1 explicitly instructs verifying the actual variable names from the .env-generation section and using those.
+**Placeholder scan:** stubs (`query_installed`, `emit_pre_sql`, `emit_add_sql`, `emit_remove_sql`) are introduced in T3 and each replaced in full in T5/T6/T7. No "TBD".
 
-**Known risk to validate during execution:** the base-image swap on an existing volume (e.g. adding `gis` flips `postgres:17`→`postgis/postgis:17-3.5` under a populated `pgdata`). Same PG major, same data layout, so expected safe — Task 8 should add a gis-add case if feasible, or at minimum the executor notes it as verified/unverified.
-```
+**Type/name consistency:** `EN`/`INST`/`ADD`/`REMOVE`/`EXT_OF`/`READ_TABLE`, `_compose`/`_apply_sql`/`_psql_q`/`_wait_db_healthy`/`_build_up`/`_pgdata_volume_name`/`_db_cid`, `api_added`/`api_eff`/`api_removed`, `OLD_PG_PW`/`OLD_AUTH_PW`/`OLD_JWT`, section markers `PRE`/`REMOVE`/`ADD`, `p4a_meta.capabilities` — consistent across tasks.
+
+**Residual risk:** `DROP EXTENSION postgis` is non-CASCADE and will (intentionally) error if a user added their own spatial dependents — acceptable, surfaces a clear error rather than silently dropping user data. The base-image swap over a populated PG17 volume is exercised live in T8 S4 (was the previously-unverified assumption).

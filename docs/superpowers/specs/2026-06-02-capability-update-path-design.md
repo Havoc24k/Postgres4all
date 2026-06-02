@@ -26,7 +26,7 @@ Consequence: adding a capability to a running install (e.g. enabling `gis` on a 
 
 ## Command surface
 
-- `./setup.sh` — fresh install (unchanged). **Refuses** with guidance if a managed install already exists (detected via the metadata table on a reachable DB).
+- `./setup.sh` — fresh install (unchanged). **Refuses** with guidance if a managed install already exists (detected via the existence of the `pgdata` Docker volume, which needs no running DB).
 - `./setup.sh --update` — apply the config delta to the running stack, **additively** (data preserved). Refuses if there are capabilities to remove, listing them and instructing to pass `--allow-drop`.
 - `./setup.sh --update --allow-drop` — additively apply, AND drop capabilities removed from the config (tables + extension).
 - `./setup.sh --update --dry-run --installed "<csv>"` — print the computed plan and the generated delta SQL without touching Docker or the DB. Drives the bash test suite. `--installed` supplies the INSTALLED set in place of querying the database.
@@ -66,23 +66,24 @@ Dependency validation (the existing `auth`→`api`, `dashboards`→`timeseries` 
 
 If `REMOVE` is non-empty and `--allow-drop` was not passed: print the would-be-dropped capabilities and exit non-zero without changing anything.
 
-## Execution order (three phases)
+## Execution order (phases)
 
-Extensions require their binary in the image; `DROP EXTENSION` also requires it. So the image rebuild is sequenced between drops and adds:
+Extensions require their binary in the image; `DROP EXTENSION` also requires it. The role chain must exist *before* the `postgrest` container starts (otherwise it crash-loops on `FATAL: role "authenticator" does not exist`). So the sequence is:
 
-1. **Phase 1 — Drops** (only with `--allow-drop`, only if `REMOVE` non-empty). Apply REMOVE SQL on the **currently running** container (binaries still present): for each removed capability in reverse canonical order, its `drop.sql` then `DROP EXTENSION` (if it owns one), and `DELETE FROM p4a_meta.capabilities`. Single `--single-transaction`.
-2. **Phase 2 — Rebuild + recreate.** Regenerate `build/` for the `target` config, then `docker compose --env-file build/.env -f build/docker-compose.yml up -d --build`. The named `pgdata` volume is preserved (data survives); the container/image are replaced and the `postgrest` service is added/removed to match `api`. Wait for the db healthcheck.
-3. **Phase 3 — Adds** (only if `ADD` non-empty). Apply ADD SQL on the recreated container (new binaries now present): `CREATE EXTENSION` for each added cap that owns one, the added capability `schema.sql` fragments (canonical order), their `seed.sql` if `seed_demo_data` is true, the grant delta (see below), and `INSERT INTO p4a_meta.capabilities`. Single `--single-transaction`.
+0. **Phase 0 — Pre-rebuild roles** (only if `api` is in ADD). On the **currently running** container, create the role chain (`anon`/`authenticated`/`authenticator`) using **idempotent `DO` blocks that check `pg_roles`** (roles are cluster-global and survive in `pgdata`, so plain `CREATE ROLE` would abort on re-run). No extension is needed for roles, so this runs fine on the old image. This guarantees the role exists by the time Phase 2 starts `postgrest`. `pg_graphql` and the grants stay in Phase 3 (they need the new image).
+1. **Phase 1 — Drops** (only with `--allow-drop`, only if `REMOVE` non-empty). If `api` is in REMOVE, **stop the `postgrest` service first** (so it is not connected as `authenticator` when that role is dropped). Then, on the currently running container, apply REMOVE SQL: for each removed capability in reverse canonical order, its `drop.sql` then `DROP EXTENSION IF EXISTS` (if it owns one), and `DELETE FROM p4a_meta.capabilities`. For `api` removal, **`ALTER DEFAULT PRIVILEGES … REVOKE …` first** (see Grant delta) before `DROP OWNED BY` / `DROP ROLE`. Single `--single-transaction`.
+2. **Phase 2 — Rebuild + recreate.** Regenerate `build/` for the `target` config, then bring the stack up with a rebuild **and `--remove-orphans`** (so a now-absent `postgrest` is actually removed, not left lingering). The named `pgdata` volume is preserved (data survives); the container/image are replaced. The rebuild uses the buildkit fallback (`DOCKER_BUILDKIT=0`) if buildx is too old, since a failed Phase 2 after a mutating Phase 1 would leave a half-applied update. Wait for the db healthcheck.
+3. **Phase 3 — Adds** (only if `ADD` non-empty). Apply ADD SQL on the recreated container (new binaries now present): `CREATE EXTENSION` for each added cap that owns one, then per capability (canonical order) its `schema.sql`, its `seed.sql` if `seed_demo_data` is true, **and immediately its grant** (so a table is never granted before it is created — see Grant delta), then `INSERT INTO p4a_meta.capabilities`. If `api` is in ADD: also `CREATE EXTENSION pg_graphql`, the graphql-schema grants, `ALTER DEFAULT PRIVILEGES`, and grants for the **already-installed** read-tables; then `docker compose restart postgrest` so it reloads its schema cache. Single `--single-transaction`.
 
-Postgres DDL (CREATE/DROP TABLE, INDEX, MATERIALIZED VIEW, POLICY, EXTENSION) is transactional, so each phase is atomic: a failure rolls back with metadata intact. Phase 2's rebuild before a failed Phase 3 is harmless (extra binaries available, no schema applied).
+Postgres DDL (CREATE/DROP TABLE, INDEX, MATERIALIZED VIEW, POLICY, EXTENSION, ROLE) is transactional, so each phase is atomic: a failure rolls back with metadata intact. Phase 2's rebuild before a failed Phase 3 is harmless (extra binaries available, no schema applied).
 
-SQL is applied via `docker compose exec -T db psql -v ON_ERROR_STOP=1 --single-transaction -U "$POSTGRES_USER" -d "$POSTGRES_DB"`.
+SQL is applied via `docker compose exec -T db psql -v ON_ERROR_STOP=1 --single-transaction -U "$PG_USER" -d "$PG_DB"` (the `PG_USER`/`PG_DB` shell variables set during `.env` generation — **not** `POSTGRES_USER`/`POSTGRES_DB`, which exist only inside the container).
 
 ## Grant delta
 
-- **`api` in ADD** (API newly enabled on an existing install): create the role chain (anon/authenticated/authenticator, using `AUTHENTICATOR_PASSWORD` from `build/.env`), `CREATE EXTENSION pg_graphql`, and emit grants for **all** enabled read-tables (same logic as fresh install's `03-api-grants.sql`), plus the graphql-schema grants and `ALTER DEFAULT PRIVILEGES`. Phase 2 brings up the `postgrest` service.
-- **`api` already installed, data capability in ADD**: `GRANT SELECT ON <new table> TO anon, authenticated;` for each added read-table; if `auth` in ADD, `GRANT SELECT, INSERT, UPDATE, DELETE ON notes TO authenticated;`.
-- **`api` in REMOVE**: drop the three roles (`DROP OWNED BY` then `DROP ROLE`), `DROP EXTENSION pg_graphql`, delete meta row; Phase 2 regenerates compose without `postgrest`.
+- **`api` in ADD** (API newly enabled on an existing install): roles are created in Phase 0 (idempotent `DO` blocks, password from `build/.env`). In Phase 3: `CREATE EXTENSION pg_graphql`, `GRANT USAGE ON SCHEMA public`, the graphql-schema grants, `ALTER DEFAULT PRIVILEGES`, and `GRANT SELECT` on the **already-installed** read-tables only. The read-tables being **added in this same delta** are granted by the per-capability ADD loop *after* their `CREATE TABLE` — never before — so no grant references a not-yet-created table inside the single transaction. (This is the key fix for the grant-ordering abort.)
+- **`api` already installed, data capability in ADD**: the per-capability ADD loop emits `GRANT SELECT ON <new table> TO anon, authenticated;` immediately after that table's `CREATE TABLE`; if `auth` is in ADD, `GRANT SELECT, INSERT, UPDATE, DELETE ON notes TO authenticated;`. So the per-cap grant fires whenever `api` is present **or** being added.
+- **`api` in REMOVE**: `ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE SELECT ON TABLES FROM anon;` (the default-privilege ACL is superuser-owned, so `DROP OWNED BY` does not clear it and `DROP ROLE anon` would otherwise fail), then `DROP OWNED BY authenticator, anon, authenticated; DROP ROLE …`, `DROP EXTENSION IF EXISTS pg_graphql`, delete meta row. Phase 1 stops `postgrest` first; Phase 2 removes the service with `--remove-orphans`.
 - **`api` not involved**: no grant statements.
 
 ## New per-capability fragment: `<cap>.drop.sql`
