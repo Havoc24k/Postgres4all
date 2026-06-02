@@ -55,6 +55,19 @@ unit-tested by `test/test_update.sh` via `--update --dry-run --installed "<csv>"
 toggling `gis` swaps the postgres/postgis image base (different glibc) and triggers a benign Postgres
 collation-version-mismatch warning.
 
+**Custom functions:** user business logic lives in top-level `functions/*.sql` (not generated, not
+init — user space). `./setup.sh --apply-functions` concatenates them (LC_ALL=C sorted) and runs one
+`psql --single-transaction`, with `NOTIFY pgrst, 'reload schema'` as the last statement so PostgREST
+serves the new `/rpc` endpoints live. It is handled in its own branch BEFORE any config read (so it
+needs no `config.json`), requires an existing install (pgdata volume), and reads `PG_USER`/`PG_DB`
+from `build/.env`. `--apply-functions --dry-run` prints the SQL with no Docker (tested by
+`test/test_functions.sh`). A function doing privileged writes for unprivileged callers must be
+`SECURITY DEFINER` (see `functions/example_submit.sql`). Procedural languages beyond `plpgsql` are
+install-time toggles in the `languages` config: `plperl` (trusted) and `plpython` (untrusted
+`plpython3u`, gated behind `allow_untrusted`); they add apt installs (`postgresql-plperl-17` —
+lang-then-version) to `build/Dockerfile` and `CREATE EXTENSION` to `01-extensions.sql`. Changing a
+language needs a fresh build (down -v); it is not wired into `--update`.
+
 ## Architecture
 
 Two containers (defined in the generated `build/docker-compose.yml`):

@@ -158,6 +158,50 @@ A plain `./setup.sh` refuses if an install already exists — use `--update`, or
 
 ---
 
+### Custom business logic (`/rpc`)
+
+Drop SQL functions into the top-level `functions/` directory and apply them to a running install:
+
+```bash
+./setup.sh --apply-functions             # apply functions/*.sql, then reload PostgREST
+./setup.sh --apply-functions --dry-run   # print the SQL without applying
+```
+
+Each function in the `public` schema becomes a `POST /rpc/<name>` endpoint (or `GET` if `STABLE`).
+Files are applied in one transaction (all-or-nothing) using your `CREATE OR REPLACE` definitions, so
+re-applying is how you ship edits. A function can leverage any enabled capability — the shipped
+`functions/example_submit.sql` writes a document **and** enqueues a job in a single call (it needs
+`document_store`, `job_queue`, and `api`). `--apply-functions` reloads an already-running PostgREST;
+it does not start the stack.
+
+> [!TIP]
+> A function that performs privileged writes (INSERT/UPDATE) on behalf of unprivileged callers
+> (`anon`/`authenticated`, who typically only have `SELECT`) should be declared `SECURITY DEFINER`
+> with a pinned `search_path` — see `functions/example_submit.sql`. That's the canonical way to expose
+> a controlled write as an RPC; without it the caller gets `permission denied`.
+
+> [!NOTE]
+> **Deleting a `.sql` file does not drop its function** from the database — `apply-functions` is
+> additive (`CREATE OR REPLACE`). Run `DROP FUNCTION <name>(<args>)` yourself to remove one.
+
+**Other languages.** `plpgsql` is always available. Enable more in the `languages` block of
+`config.json` *at install time*:
+
+| Language | `languages` key | Trusted? |
+|---|---|---|
+| PL/pgSQL | (always on) | ✅ |
+| PL/Perl | `"plperl": true` | ✅ |
+| PL/Python | `"plpython": true` + `"allow_untrusted": true` | ❌ untrusted |
+
+> [!WARNING]
+> `plpython` uses `plpython3u`, an **untrusted** language (functions run with the database OS user's
+> full privileges). It is gated behind `"allow_untrusted": true` and is unsafe for code you didn't
+> write. Languages are **install-time**: enabling one on an already-running install requires a fresh
+> build (`docker compose -f build/docker-compose.yml down -v` then `./setup.sh`) — `--update` does not
+> pick up language changes.
+
+---
+
 ## Try each capability
 
 <details>
