@@ -144,5 +144,27 @@ grep -q "('document_store')" build/init/04-meta.sql && ok "meta has document_sto
 grep -q "('vector')" build/init/04-meta.sql && ok "meta has vector" || bad "meta vector"
 grep -q "('api')" build/init/04-meta.sql && bad "meta must omit disabled api" || ok "meta omits api"
 
+# --- languages: plperl -> apt package + CREATE EXTENSION plperl ---
+# NOTE: PL packages are named postgresql-plperl-<major> (lang-then-version), NOT postgresql-<major>-plperl.
+gen '{"capabilities":{"document_store":true},"languages":{"plperl":true}}'
+grep -q 'postgresql-plperl-17' build/Dockerfile && ok "plperl: apt package" || bad "plperl pkg"
+grep -q 'CREATE EXTENSION IF NOT EXISTS plperl' build/init/01-extensions.sql && ok "plperl: extension" || bad "plperl ext"
+
+# --- languages: plpython without allow_untrusted -> setup errors ---
+cfg="$(mktemp)"; printf '{"capabilities":{"document_store":true},"languages":{"plpython":true}}' >"$cfg"
+out="$(./setup.sh --dry-run "$cfg" 2>&1)"; rc=$?
+{ [ $rc -ne 0 ] && echo "$out" | grep -qi 'untrusted'; } && ok "plpython gated without allow_untrusted" || bad "plpython gate"
+rm -f "$cfg"
+
+# --- languages: plpython WITH allow_untrusted -> package + plpython3u extension ---
+gen '{"capabilities":{"document_store":true},"languages":{"plpython":true,"allow_untrusted":true}}'
+grep -q 'postgresql-plpython3-17' build/Dockerfile && ok "plpython: apt package" || bad "plpython pkg"
+grep -q 'CREATE EXTENSION IF NOT EXISTS plpython3u' build/init/01-extensions.sql && ok "plpython: extension" || bad "plpython ext"
+
+# --- languages: omitted -> no language packages/extensions ---
+gen '{"capabilities":{"document_store":true}}'
+grep -qE 'plperl|plpython' build/Dockerfile && bad "no language pkgs when omitted" || ok "no language pkgs (omitted)"
+grep -qE 'plperl|plpython3u' build/init/01-extensions.sql && bad "no language exts when omitted" || ok "no language exts (omitted)"
+
 echo "----"; echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ]

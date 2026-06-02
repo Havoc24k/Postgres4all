@@ -189,6 +189,18 @@ fi
 
 echo "config OK: $(for c in "${CAPS[@]}"; do [ "${EN[$c]}" = 1 ] && printf '%s ' "$c"; done)"
 
+# --- languages (plpgsql is always available; plperl trusted; plpython untrusted) ---
+LANG_PLPERL="$(jq -r '.languages.plperl // false | if . then 1 else 0 end' "$CONFIG")"
+LANG_PLPYTHON="$(jq -r '.languages.plpython // false | if . then 1 else 0 end' "$CONFIG")"
+LANG_ALLOW_UNTRUSTED="$(jq -r '.languages.allow_untrusted // false | if . then 1 else 0 end' "$CONFIG")"
+
+if [ "$LANG_PLPYTHON" = 1 ] && [ "$LANG_ALLOW_UNTRUSTED" = 0 ]; then
+  die "language 'plpython' is UNTRUSTED (plpython3u runs with the database OS user's full privileges — unsafe for user-supplied code). Set \"allow_untrusted\": true in the languages block of $CONFIG to enable it deliberately."
+fi
+if [ "$LANG_PLPYTHON" = 1 ]; then
+  echo "WARNING: plpython3u is an UNTRUSTED language; only superusers can create functions in it and they run with full OS privileges." >&2
+fi
+
 PG_MAJOR=17
 POSTGIS_VERSION=3.5
 PG_GRAPHQL_VERSION=1.5.11
@@ -232,6 +244,12 @@ DF
       "$PG_GRAPHQL_VERSION" "$PG_GRAPHQL_VERSION" "$PG_MAJOR"
     printf 'wget -q -O /tmp/pg_graphql.deb "$url"; apt-get update; apt-get install -y --no-install-recommends /tmp/pg_graphql.deb; rm -f /tmp/pg_graphql.deb; rm -rf /var/lib/apt/lists/*\n'
   fi
+  if [ "$LANG_PLPERL" = 1 ] || [ "$LANG_PLPYTHON" = 1 ]; then
+    pkgs=""
+    [ "$LANG_PLPERL" = 1 ]   && pkgs="$pkgs postgresql-plperl-${PG_MAJOR}"
+    [ "$LANG_PLPYTHON" = 1 ] && pkgs="$pkgs postgresql-plpython3-${PG_MAJOR}"
+    echo "RUN apt-get update && apt-get install -y --no-install-recommends${pkgs} && rm -rf /var/lib/apt/lists/*"
+  fi
   echo "COPY init/ /docker-entrypoint-initdb.d/"
 } > build/Dockerfile
 
@@ -242,6 +260,8 @@ DF
   [ "${EN[vector]}" = 1 ] && echo "CREATE EXTENSION IF NOT EXISTS vector;"
   [ "${EN[gis]}" = 1 ]    && echo "CREATE EXTENSION IF NOT EXISTS postgis;"
   [ "${EN[api]}" = 1 ]    && echo "CREATE EXTENSION IF NOT EXISTS pg_graphql;"
+  [ "$LANG_PLPERL" = 1 ]   && echo "CREATE EXTENSION IF NOT EXISTS plperl;"
+  [ "$LANG_PLPYTHON" = 1 ] && echo "CREATE EXTENSION IF NOT EXISTS plpython3u;"
   true
 } > build/init/01-extensions.sql
 
