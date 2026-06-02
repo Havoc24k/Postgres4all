@@ -48,14 +48,6 @@ func cfgWithCaps(caps ...string) *config.Config {
 	return c
 }
 
-// cfgNoSeed returns a Config with the given capabilities and seeding disabled.
-func cfgNoSeed(caps ...string) *config.Config {
-	c := cfgWithCaps(caps...)
-	f := false
-	c.SeedDemoData = &f
-	return c
-}
-
 // checkGolden compares got to the golden file; updates if -update is given.
 func checkGolden(t *testing.T, goldenName, got string) {
 	t.Helper()
