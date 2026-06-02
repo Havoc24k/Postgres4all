@@ -313,6 +313,55 @@ if [ "$UPDATE" = 0 ]; then
 fi
 
 # ---------- UPDATE MODE ----------
-# (delta computation + plan + dry-run print + live execution added in Tasks 4-7)
-echo "update: not yet implemented"
-exit 0
+# Determine INSTALLED set.
+if [ "$INSTALLED_GIVEN" = 1 ]; then
+  installed_list="$INSTALLED_CSV"
+else
+  vol="$(_pgdata_volume_name)"
+  if [ -z "$vol" ] || ! docker volume inspect "$vol" >/dev/null 2>&1; then
+    die "no existing install found (no pgdata volume). Run './setup.sh' for a fresh install."
+  fi
+  installed_list="$(query_installed)"
+fi
+
+declare -A INST
+IFS=',' read -ra _inst <<< "$installed_list"
+for c in "${_inst[@]}"; do [ -n "$c" ] && INST[$c]=1; done
+
+# Compute ADD / REMOVE in canonical order.
+ADD=(); REMOVE=()
+for c in "${CAPS[@]}"; do
+  if [ "${EN[$c]}" = 1 ] && [ "${INST[$c]:-0}" != 1 ]; then ADD+=("$c"); fi
+  if [ "${EN[$c]}" != 1 ] && [ "${INST[$c]:-0}" = 1 ]; then REMOVE+=("$c"); fi
+done
+
+echo "Update plan:"
+echo "  ADD: ${ADD[*]:-(none)}"
+echo "  REMOVE: ${REMOVE[*]:-(none)}"
+
+if [ "${#REMOVE[@]}" -gt 0 ] && [ "$ALLOW_DROP" = 0 ]; then
+  die "removing capabilities (${REMOVE[*]}) is destructive; re-run with --allow-drop to confirm."
+fi
+if [ "${#ADD[@]}" -eq 0 ] && [ "${#REMOVE[@]}" -eq 0 ]; then
+  echo "already up to date."
+  exit 0
+fi
+
+# api orchestration flags
+api_added=0
+for c in "${ADD[@]}"; do if [ "$c" = api ]; then api_added=1; fi; done
+api_removed=0
+for c in "${REMOVE[@]}"; do if [ "$c" = api ]; then api_removed=1; fi; done
+
+if [ "$DRY_RUN" = 1 ]; then
+  echo "===== PRE ====="
+  if [ "$api_added" = 1 ]; then emit_pre_sql; fi
+  echo "===== REMOVE ====="
+  if [ "${#REMOVE[@]}" -gt 0 ]; then emit_remove_sql; fi
+  echo "===== ADD ====="
+  if [ "${#ADD[@]}" -gt 0 ]; then emit_add_sql; fi
+  exit 0
+fi
+
+# live execution added in Task 7
+die "internal: live update execution not implemented"
