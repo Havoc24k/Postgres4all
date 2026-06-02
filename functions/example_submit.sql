@@ -5,9 +5,15 @@
 -- /rpc endpoint to be reachable. The GRANT below targets PostgREST's anon/authenticated roles,
 -- which exist ONLY when api is enabled — so it is guarded with an IF EXISTS check, meaning this
 -- file applies cleanly even on a non-api install (the function is created; it just isn't granted).
+-- SECURITY DEFINER: this function performs privileged INSERTs, but anon/authenticated have only
+-- SELECT on products/jobs. Running as the function owner lets unprivileged callers perform exactly
+-- this one controlled write — the whole point of exposing logic as an RPC. search_path is pinned
+-- (a SECURITY DEFINER safety requirement); pg_catalog is searched first implicitly.
 CREATE OR REPLACE FUNCTION submit_product(name text, attributes jsonb DEFAULT '{}'::jsonb)
 RETURNS jsonb
 LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
 AS $$
 DECLARE
     new_id bigint;
