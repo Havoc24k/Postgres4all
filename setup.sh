@@ -182,8 +182,29 @@ if [ "$APPLY_FUNCTIONS" = 1 ]; then
     emit_functions_sql
     exit 0
   fi
-  # live apply added in Task 4
-  die "internal: live apply-functions not implemented"
+  # Live apply. This path skips build/ generation, so do its own preflight + read PG_USER/PG_DB
+  # (the exact names _apply_sql uses) from the existing build/.env, hardened under set -euo pipefail.
+  for t in docker jq; do command -v "$t" >/dev/null 2>&1 || die "missing required tool: $t"; done
+  docker compose version >/dev/null 2>&1 || die "missing required tool: docker compose"
+  [ -f build/.env ] || die "build/.env not found — run ./setup.sh first, then --apply-functions."
+  PG_USER="$(grep '^POSTGRES_USER=' build/.env | cut -d= -f2-)" || true
+  PG_DB="$(grep '^POSTGRES_DB=' build/.env | cut -d= -f2-)" || true
+  [ -n "$PG_USER" ] || die "POSTGRES_USER missing from build/.env"
+  [ -n "$PG_DB" ]   || die "POSTGRES_DB missing from build/.env"
+
+  vol="$(_pgdata_volume_name)"
+  if [ -z "$vol" ] || ! docker volume inspect "$vol" >/dev/null 2>&1; then
+    die "no existing install found (no pgdata volume). Run './setup.sh' first, then --apply-functions."
+  fi
+
+  # Bring up the WHOLE stack (db + postgrest if api was enabled), so the in-transaction NOTIFY reload
+  # reaches a live PostgREST even if the stack was fully down. --remove-orphans matches the compose file.
+  _compose up -d --remove-orphans
+  _wait_db_healthy
+  echo "applying $(ls functions/*.sql | wc -l | tr -d ' ') function file(s)..."
+  emit_functions_sql | _apply_sql
+  echo "functions applied; PostgREST schema reloaded (if running)."
+  exit 0
 fi
 
 [ -n "$CONFIG" ] || CONFIG="config.json"
