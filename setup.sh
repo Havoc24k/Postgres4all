@@ -32,6 +32,7 @@ _wait_db_healthy() {
 # up -d with rebuild + --remove-orphans, with a legacy-builder fallback for buildx < 0.17.
 _build_up() {
   local err; err="$(mktemp)"
+  trap 'rm -f "$err"' RETURN
   if _compose up -d --build --remove-orphans 2>"$err"; then rm -f "$err"; return 0; fi
   if grep -qi 'buildx' "$err"; then
     DOCKER_BUILDKIT=0 docker build -t postgres-everything:generated build/ \
@@ -71,6 +72,7 @@ while [ $# -gt 0 ]; do
 done
 if [ "$ALLOW_DROP" = 1 ] && [ "$UPDATE" = 0 ]; then die "--allow-drop requires --update"; fi
 if [ "$INSTALLED_GIVEN" = 1 ] && [ "$UPDATE" = 0 ]; then die "--installed requires --update"; fi
+if [ "$INSTALLED_GIVEN" = 1 ] && [ -z "$INSTALLED_CSV" ]; then die "--installed requires a non-empty value"; fi
 [ -n "$CONFIG" ] || CONFIG="config.json"
 [[ "$CONFIG" = /* ]] || CONFIG="$PWD/$CONFIG"   # absolutise vs invocation dir, survives the later cd
 

@@ -3,7 +3,6 @@
 # which prints a plan + per-phase delta SQL without touching Docker or a database.
 set -uo pipefail
 cd "$(dirname "$0")/.."
-PROJ_ROOT="$PWD"
 
 PASS=0; FAIL=0
 ok()  { echo "ok   - $1"; PASS=$((PASS+1)); }
