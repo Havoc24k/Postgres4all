@@ -70,18 +70,18 @@ func (c *Config) Validate() error {
 	for _, k := range Order {
 		known[k] = true
 	}
-	any := false
+	anyEnabled := false
 	for _, k := range Order {
 		if c.Capabilities[k] {
-			any = true
+			anyEnabled = true
 		}
 	}
-	if !any {
+	if !anyEnabled {
 		problems = append(problems, "at least one capability must be enabled")
 	}
 	for k := range c.Capabilities {
 		if !known[k] {
-			problems = append(problems, fmt.Sprintf("unknown capability %q (ignored)", k))
+			problems = append(problems, fmt.Sprintf("unknown capability %q (typo? not one of %v)", k, Order))
 		}
 	}
 	if c.Capabilities["auth"] && !c.Capabilities["api"] {

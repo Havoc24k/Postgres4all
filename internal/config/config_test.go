@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func mustValidate(t *testing.T, c *Config) error { t.Helper(); return c.Validate() }
 
@@ -30,7 +33,7 @@ func TestValidate(t *testing.T) {
 				}
 				return
 			}
-			if err == nil || !contains(err.Error(), tc.wantErr) {
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 				t.Fatalf("want error containing %q, got %v", tc.wantErr, err)
 			}
 		})
@@ -46,14 +49,4 @@ func TestDefaults(t *testing.T) {
 	if !c.Seed() {
 		t.Fatalf("seed should default true")
 	}
-}
-
-func contains(s, sub string) bool { return len(sub) == 0 || (len(s) >= len(sub) && indexOf(s, sub) >= 0) }
-func indexOf(s, sub string) int {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return i
-		}
-	}
-	return -1
 }
