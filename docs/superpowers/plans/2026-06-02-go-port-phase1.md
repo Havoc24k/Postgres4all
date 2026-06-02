@@ -6,7 +6,7 @@
 
 **Architecture:** `cmd/postgres4all` (Cobra) → `internal/config` (typed Load+Validate) → `internal/generate` (embedded `text/template` + embedded capability `.sql` fragments → writes `build/`) → `internal/dockerx` (`os/exec` wrappers for `docker compose`). Secrets via `internal/secrets` (`crypto/rand`). Tests: table-driven config tests + golden-file generation tests.
 
-**Tech Stack:** Go 1.23+, `github.com/spf13/cobra`, stdlib (`encoding/json`, `text/template`, `embed`, `crypto/rand`, `os/exec`). Tests via `go test ./...`.
+**Tech Stack:** Go 1.25, `github.com/spf13/cobra`, stdlib (`encoding/json`, `text/template`, `embed`, `crypto/rand`, `os/exec`). Tests via `go test ./...`.
 
 **Spec:** `docs/superpowers/specs/2026-06-02-go-port-phase1-design.md`
 
@@ -24,6 +24,7 @@
 ```bash
 cd /home/havoc24k/projects/postgres4all
 go mod init github.com/Havoc24k/postgres4all
+go mod edit -go=1.25          # minor-version floor matching the installed toolchain (avoids a patch-pinned directive)
 go get github.com/spf13/cobra@latest
 ```
 
@@ -498,6 +499,13 @@ var templatesFS embed.FS
 
 - [ ] **Step 2: Write the golden test harness FIRST (failing)**
 
+The committed golden trees under `testdata/golden/` are the **authoritative** expected output. Every
+case sets fixed secrets (`Postgres.Password="p"`, and api cases `AuthenticatorPassword="a"`/`JWTSecret="j"`)
+so `.env` is **deterministic** — `Generate` must use config-provided secrets verbatim and only call
+`secrets.Hex` when a secret is empty (that random path is never exercised by goldens). The `api_only`
+case (api on, NO read-capabilities) locks the rule that `03-api-grants.sql` omits the `GRANT SELECT ON
+<tables>` line entirely when the scoped read-table set is empty.
+
 `internal/generate/generate_test.go`:
 ```go
 package generate
@@ -506,6 +514,8 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"testing"
 
 	"github.com/Havoc24k/postgres4all/internal/config"
@@ -519,22 +529,22 @@ func cfg(caps []string, mut func(*config.Config)) *config.Config {
 		c.Capabilities[k] = true
 	}
 	c.ApplyDefaults()
+	c.Postgres.Password = "p" // fixed -> deterministic .env for goldens
 	if mut != nil {
 		mut(c)
 	}
 	return c
 }
 
+func withAPI(c *config.Config) { c.API.AuthenticatorPassword = "a"; c.API.JWTSecret = "j" }
+
 func TestGenerateGolden(t *testing.T) {
 	cases := map[string]*config.Config{
 		"minimal":  cfg([]string{"document_store"}, nil),
-		"api_auth": cfg([]string{"document_store", "api", "auth"}, func(c *config.Config) {
-			c.Postgres.Password = "p"; c.API.AuthenticatorPassword = "a"; c.API.JWTSecret = "j"
-		}),
 		"gis":      cfg([]string{"gis"}, nil),
-		"full":     cfg(config.Order, func(c *config.Config) {
-			c.Postgres.Password = "p"; c.API.AuthenticatorPassword = "a"; c.API.JWTSecret = "j"
-		}),
+		"api_only": cfg([]string{"api", "auth"}, withAPI), // api on, no read-caps -> no GRANT SELECT table line
+		"api_auth": cfg([]string{"document_store", "api", "auth"}, withAPI),
+		"full":     cfg(config.Order, withAPI),
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -542,13 +552,11 @@ func TestGenerateGolden(t *testing.T) {
 			if err := Generate(c, out); err != nil {
 				t.Fatal(err)
 			}
-			goldenDir := filepath.Join("testdata", "golden", name)
-			compareTree(t, goldenDir, out, *update)
+			compareTree(t, filepath.Join("testdata", "golden", name), out, *update)
 		})
 	}
 }
 
-// compareTree walks want (golden) and got dirs; with update, rewrites golden from got.
 func compareTree(t *testing.T, goldenDir, gotDir string, doUpdate bool) {
 	t.Helper()
 	if doUpdate {
@@ -556,44 +564,132 @@ func compareTree(t *testing.T, goldenDir, gotDir string, doUpdate bool) {
 		copyTree(t, gotDir, goldenDir)
 		return
 	}
-	wantFiles := listFiles(t, goldenDir)
-	gotFiles := listFiles(t, gotDir)
-	if len(wantFiles) != len(gotFiles) {
-		t.Fatalf("file set differs:\n want %v\n got  %v", wantFiles, gotFiles)
+	want, got := listFiles(t, goldenDir), listFiles(t, gotDir)
+	if strings.Join(want, ",") != strings.Join(got, ",") {
+		t.Fatalf("file set differs:\n want %v\n got  %v", want, got)
 	}
-	for _, rel := range wantFiles {
+	for _, rel := range want {
 		w, _ := os.ReadFile(filepath.Join(goldenDir, rel))
 		g, err := os.ReadFile(filepath.Join(gotDir, rel))
 		if err != nil {
 			t.Fatalf("missing generated %s", rel)
 		}
 		if string(w) != string(g) {
-			t.Fatalf("%s differs from golden", rel)
+			t.Fatalf("%s differs from golden (run -update to regenerate after a deliberate change)", rel)
 		}
 	}
 }
+
+func listFiles(t *testing.T, dir string) []string {
+	t.Helper()
+	var out []string
+	if err := filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() {
+			rel, _ := filepath.Rel(dir, p)
+			out = append(out, rel)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("walk %s: %v", dir, err)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func copyTree(t *testing.T, src, dst string) {
+	t.Helper()
+	if err := filepath.WalkDir(src, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(src, p)
+		target := filepath.Join(dst, rel)
+		if d.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		b, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(target, b, 0o644)
+	}); err != nil {
+		t.Fatalf("copy %s->%s: %v", src, dst, err)
+	}
+}
 ```
-Plus small helpers `listFiles`, `copyTree` (walk with `filepath.WalkDir`, collect relative paths sorted; copy preserving subdirs). Implement them in the test file. NOTE: secrets make `.env` non-deterministic — so for golden cases that enable `api`, the config MUST set explicit passwords/JWT (as above), and `Generate` must use config-provided secrets verbatim (only generate when empty). The golden `.env` then has the fixed values. For non-api cases without a password, `Generate` would random-generate POSTGRES_PASSWORD → non-deterministic; therefore golden cases ALWAYS set `Postgres.Password` (minimal/gis set it too). Update the `cfg` calls to set `Password:"p"` for every case to keep `.env` deterministic.
 
 - [ ] **Step 3: Run, verify failure** — `go test ./internal/generate/` → fails (no `Generate`). Confirm.
 
 - [ ] **Step 4: Implement `internal/generate/generate.go`**
 
-Implement `Generate(c *config.Config, outDir string) error` that:
-1. wipes+creates `outDir` and `outDir/init`.
-2. builds a Dockerfile view-model (GIS/Vector/API bools, LangPkgs slice, version consts) and renders `Dockerfile.tmpl` → `outDir/Dockerfile`.
-3. writes `outDir/init/01-extensions.sql`: `CREATE EXTENSION IF NOT EXISTS` for pg_trgm/vector/postgis/pg_graphql per enabled caps, then plperl/plpython3u per languages.
-4. writes `outDir/init/02-schema.sql`: for each cap in canonical order (excluding api), read `capabilities/<cap>.schema.sql` from `capabilitiesFS`, then `<cap>.seed.sql` if `c.Seed()` and it exists.
-5. writes `outDir/init/04-meta.sql`: schema + table + INSERT per enabled cap.
-6. if api: write `outDir/init/00-roles.sh` (constant content) and `outDir/init/03-api-grants.sql` (grants scoped to enabled read-tables + notes CRUD if auth + graphql grants + alter default).
-7. resolves secrets: Password/AuthPw/JWT from config, else `secrets.Hex`. Renders `env.tmpl` → `outDir/.env`, then `os.Chmod(outDir/.env, 0o600)`.
-8. renders `docker-compose.yml.tmpl` with `Bind = "127.0.0.1:"` unless `PublishExternally`, `Image`, `PostgRESTImage`.
+Implement `Generate(c *config.Config, outDir string) error`. A fixed header is prepended to every
+generated **init SQL** file: `const header = "-- generated by postgres4all; do not edit\n"`. Steps:
 
-Use the constants from the plan header. The 00-roles.sh and 03-grants content should mirror the bash-generated equivalents (behavioral parity). Provide them as Go string constants / a small builder. (The implementer mirrors `build/init/00-roles.sh` and `03-api-grants.sql` produced by the current `setup.sh` for the same config — generate one with bash and diff during development.)
+1. **Delete only owned artifacts** (NOT `os.RemoveAll(outDir)` — `--out` is user-controllable, e.g.
+   `--out .` would wipe the cwd). Remove `outDir/Dockerfile`, `outDir/docker-compose.yml`, `outDir/.env`,
+   and the `outDir/init/` subtree, then `os.MkdirAll(outDir/init, 0o755)`.
+2. **Dockerfile** → render `Dockerfile.tmpl` with a view-model (`GIS/Vector/API` bools, `LangPkgs []string`
+   = `postgresql-plperl-17`/`postgresql-plpython3-17` per languages, version consts) → `outDir/Dockerfile` (0o644).
+3. **`outDir/init/01-extensions.sql`** (0o644): `header`, then `CREATE EXTENSION IF NOT EXISTS` lines —
+   `pg_trgm` if search, `vector` if vector, `postgis` if gis, `pg_graphql` if api, `plperl` if languages.plperl,
+   `plpython3u` if languages.plpython. (For a document_store-only config the file is the header line alone.)
+4. **`outDir/init/02-schema.sql`** (0o644): write `header`, then for each enabled capability in canonical
+   order (api excluded; the order is `document_store,job_queue,search,vector,gis,timeseries,dashboards,auth`):
+   read `capabilities/<cap>.schema.sql` from `capabilitiesFS`, write it, then write `"\n"`; if `c.Seed()`
+   and `capabilities/<cap>.seed.sql` exists, write it then `"\n"`. (Mirrors bash `cat fragment; echo` — each
+   fragment already ends in `\n`, so the extra `\n` yields one blank separator line. Goldens lock the spacing.)
+5. **`outDir/init/04-meta.sql`** (0o644): `header`, then the `p4a_meta` schema + `capabilities` table DDL,
+   then `INSERT INTO p4a_meta.capabilities (cap) VALUES ('<cap>') ON CONFLICT (cap) DO NOTHING;` per enabled
+   capability in canonical order (api included if enabled — match the current `04-meta.sql` body exactly;
+   diff against a bash-generated one once, then the golden is authoritative).
+6. **If api**, write two more files:
+   - `outDir/init/00-roles.sh`, mode **0o755**, content EXACTLY (a Go raw-string const — note `${...}` is
+     literal in a raw string, no Go interpolation):
+     ```
+     #!/bin/bash
+     set -euo pipefail
+     : "${AUTHENTICATOR_PASSWORD:?AUTHENTICATOR_PASSWORD must be set}"
+     psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" \
+          --set authpw="$AUTHENTICATOR_PASSWORD" <<-'EOSQL'
+         CREATE ROLE anon NOLOGIN;
+         CREATE ROLE authenticated NOLOGIN;
+         CREATE ROLE authenticator NOINHERIT LOGIN PASSWORD :'authpw';
+         GRANT anon, authenticated TO authenticator;
+     EOSQL
+     ```
+   - `outDir/init/03-api-grants.sql` (0o644), built as: `header`,
+     `GRANT USAGE ON SCHEMA public TO anon, authenticated;`,
+     then — ONLY if the scoped read-table set is non-empty — `GRANT SELECT ON <tables> TO anon, authenticated;`
+     where `<tables>` is the enabled read-capabilities mapped via the read-table map, comma-joined in canonical
+     order (`document_store→products … dashboards→event_daily`; the `[ -n "$read_tables" ]` guard means NO line
+     when empty — locked by the `api_only` golden);
+     then if auth: `GRANT SELECT, INSERT, UPDATE, DELETE ON notes TO authenticated;`;
+     then `GRANT USAGE ON SCHEMA graphql TO anon, authenticated;`,
+     `GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA graphql TO anon, authenticated;`,
+     `ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO anon;`.
+7. **Secrets + `.env`** (mode **0o600**): resolve each from config, else generate with PINNED sizes matching
+   bash strength — `POSTGRES_PASSWORD = secrets.Hex(24)` (48 chars), `AUTHENTICATOR_PASSWORD = secrets.Hex(16)`
+   (32 chars), `JWT_SECRET = secrets.Hex(48)` (96 chars). Render `env.tmpl` → `outDir/.env`, then `os.Chmod(…, 0o600)`.
+8. **docker-compose.yml** (0o644) → render `docker-compose.yml.tmpl` with `Bind="127.0.0.1:"` unless
+   `c.Postgres.PublishExternally` (then `""`), `Image=GeneratedImage`, `PostgRESTImage=PostgRESTImage`.
 
-- [ ] **Step 5: Generate goldens, then run**
+Use the constants from the plan header. The exact `04-meta.sql` and `01-extensions.sql` bodies are pinned by
+the committed goldens (Step 5); generate one bash equivalent to copy the `04-meta` DDL wording, then never
+diff against bash again.
 
-Run: `go test ./internal/generate/ -run TestGenerateGolden -update` to write goldens. INSPECT the goldens (`git diff --stat`, read `testdata/golden/full/Dockerfile` and `init/*`) and confirm they match what `setup.sh --dry-run` produces for the same configs (diff against a bash-generated `build/`). Then `go test ./internal/generate/` → PASS.
+- [ ] **Step 5: Generate goldens (authoritative), then run**
+
+Run `go test ./internal/generate/ -run TestGenerateGolden -update` to write the golden trees. **The
+committed goldens are the source of truth** — read them carefully (`git diff --stat`; read
+`testdata/golden/full/Dockerfile`, `api_only/init/03-api-grants.sql`, `minimal/init/01-extensions.sql`,
+each `.env`) and confirm they are correct Postgres/Docker by inspection. As a ONE-TIME developer sanity
+check only — NOT a CI assertion — eyeball that the `.env` keys, the compose services, and the init
+filenames line up with `./setup.sh --dry-run <config>` for an equivalent config (the two differ on header
+wording, Dockerfile line-wrapping, and random secrets, so do NOT byte-diff). Then run
+`go test ./internal/generate/` → PASS (re-running is deterministic).
 
 - [ ] **Step 6: Commit**
 ```bash
@@ -810,12 +906,13 @@ Run:
 go build ./cmd/postgres4all
 printf '{"capabilities":{"document_store":true,"api":true,"auth":true},"postgres":{"password":"p"},"api":{"authenticator_password":"a","jwt_secret":"j"}}' > /tmp/c.json
 ./postgres4all generate --config /tmp/c.json --out /tmp/gobuild
-# compare structure to bash:
-./setup.sh --dry-run /tmp/c.json >/dev/null   # wait — bash needs config.json; instead:
-cp /tmp/c.json config.json; ./setup.sh --dry-run >/dev/null; rm -f config.json
-diff <(cd /tmp/gobuild && find . -type f | sort) <(cd build && find . -type f | sort)
+# bash accepts a positional config path directly (writes the gitignored repo-root build/):
+./setup.sh --dry-run /tmp/c.json >/dev/null
+# ONE-TIME sanity check: same file SET only (NOT a content diff — see Task 5 Step 5).
+diff <(cd /tmp/gobuild && find . -type f | sort) <(cd build && find . -type f | sort) && echo "file set matches"
 ```
-Expected: same file set (Dockerfile, docker-compose.yml, .env, init/00-04). Inspect `.env` keys and compose services match. `go test ./...` → PASS. `go vet ./...` clean.
+Expected: same file set (Dockerfile, docker-compose.yml, .env, init/00–04). Eyeball that `.env` keys and
+compose services align. (Content authority is the Go goldens, not this diff.) `go test ./...` → PASS. `go vet ./...` clean.
 
 - [ ] **Step 6: Commit**
 ```bash
@@ -874,7 +971,17 @@ git commit -m "docs: note the in-progress Go CLI alongside setup.sh"
 **Type/name consistency:** `config.Config`/`Order`/`Enabled`/`Seed`/`ApplyDefaults`/`Validate`; `secrets.Hex`; `generate.Generate`, `capabilitiesFS`/`templatesFS`; `dockerx.Compose`/`VolumeName`/`VolumeExists`/`Preflight`; cmd constructors `newGenerateCmd`/`newInstallCmd`/`newStub`. Module path `github.com/Havoc24k/postgres4all` used in all imports.
 
 **Known risks to validate during execution:**
-- `.env` non-determinism breaks golden tests unless every golden config sets explicit secrets — Task 5 Step 2 mandates `Password`/`AuthPw`/`JWT` on all golden cases.
-- `go:embed templates/*.tmpl` requires the `templates/` dir to exist with ≥1 file at build time — Task 5 creates the templates before adding the embed line (Task 4 embeds only `capabilities`).
-- The 00-roles/03-grants byte-parity with bash is the main correctness risk — Task 5 Step 5 mandates diffing the goldens against `setup.sh --dry-run` output.
-- `go.sum` must be committed (Task 1) for reproducible cobra builds.
+- **Goldens are the sole source of truth; bash is NOT a byte oracle.** The two generators differ on
+  header wording (`-- generated by postgres4all`), Dockerfile line-wrapping, and random secret lengths.
+  The Go golden test diffs against committed `testdata/golden/` (deterministic — fixed secrets); the
+  bash cross-check (Task 5 Step 5, Task 7 Step 5) is a one-time file-set/keys inspection, never a byte diff.
+- `.env` determinism: every golden config sets fixed `Password` (+ api `AuthPw`/`JWT`) — Task 5 Step 2.
+- Every generated **init SQL** file begins with the `header` line; `01-extensions.sql` for a no-extension
+  config is the header alone — Task 5 Step 4.
+- `00-roles.sh` is written mode 0o755 (executable), `.env` 0o600, other generated files 0o644 — Task 5 Step 4.
+- `03-api-grants.sql` omits the `GRANT SELECT ON <tables>` line entirely when no read-capabilities are
+  enabled — locked by the `api_only` golden.
+- `Generate()` deletes only its OWN artifacts, never `os.RemoveAll(--out)` — Task 5 Step 4 item 1.
+- `go:embed templates/*.tmpl` requires `templates/` to exist with ≥1 file — Task 5 creates them before
+  adding the embed line (Task 4 embeds only `capabilities`).
+- `go.sum` committed (Task 1); `go.mod` floor pinned to `go 1.25` via `go mod edit`.
