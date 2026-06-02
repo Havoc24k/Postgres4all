@@ -238,8 +238,9 @@ simpler choice.**
 
 ## Notes
 
-`postgres4all` (Go, under `cmd/` + `internal/`) generates `build/` from `config.json` using embedded
-templates + capability SQL fragments, then drives `docker compose`. Run the tests with `go test ./...`.
-Pinned: Postgres 17 / PostGIS 3.5 / pgvector / pg_graphql 1.5.11 / PostgREST 12.2.3 (constants in
-`internal/generate/generate.go`); builds for amd64 + arm64. Demo grants are permissive (anon reads
-everything) — tighten before real use.
+- **How it works** — `postgres4all` (Go, under `cmd/` + `internal/`) generates `build/` from your
+  `config.json`, then drives `docker compose`.
+- **Versions** — Postgres 17, PostGIS 3.5, pgvector, pg_graphql 1.5.11, PostgREST 12.2.3 (pinned in
+  `internal/generate/generate.go`). Builds for amd64 and arm64.
+- **Security** — demo grants are permissive (anon reads everything); tighten before real use.
+- **Tests** — `go test ./...`.
