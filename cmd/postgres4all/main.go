@@ -17,7 +17,10 @@ func main() {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
-	// subcommands registered in later tasks
+	root.AddCommand(newGenerateCmd())
+	root.AddCommand(newInstallCmd())
+	root.AddCommand(newStub("update", "Phase 2"))
+	root.AddCommand(newStub("apply-functions", "Phase 3"))
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "ERROR:", err)
 		os.Exit(1)
