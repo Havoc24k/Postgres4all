@@ -20,7 +20,7 @@ func main() {
 	root.AddCommand(newGenerateCmd())
 	root.AddCommand(newInstallCmd())
 	root.AddCommand(newUpdateCmd())
-	root.AddCommand(newStub("apply-functions", "Phase 3"))
+	root.AddCommand(newApplyFunctionsCmd())
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "ERROR:", err)
 		os.Exit(1)
