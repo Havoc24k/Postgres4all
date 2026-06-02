@@ -25,6 +25,7 @@ Elasticsearch, Pinecone, PostGIS stacks, time-series DBs, Snowflake, and a hand-
 - [Quick start](#quick-start)
 - [`config.json`](#configjson)
 - [Updating an existing install](#updating-an-existing-install)
+- [Custom business logic (`/rpc`)](#custom-business-logic-rpc)
 - [Try each capability](#try-each-capability)
 - [REST API](#rest-api)
 - [The honest caveat](#the-honest-caveat)
@@ -158,7 +159,7 @@ A plain `./setup.sh` refuses if an install already exists — use `--update`, or
 
 ---
 
-### Custom business logic (`/rpc`)
+## Custom business logic (`/rpc`)
 
 Drop SQL functions into the top-level `functions/` directory and apply them to a running install:
 
