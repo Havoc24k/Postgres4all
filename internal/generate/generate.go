@@ -42,8 +42,16 @@ var readTableMap = map[string]string{
 	"dashboards":     "event_daily",
 }
 
-// schemaOrder is the canonical order for schema generation (api excluded).
-var schemaOrder = []string{"document_store", "job_queue", "search", "vector", "gis", "timeseries", "dashboards", "auth"}
+// schemaOrder is the capability order for schema assembly: config.Order without "api" (api owns no schema).
+var schemaOrder = func() []string {
+	out := make([]string, 0, len(config.Order))
+	for _, c := range config.Order {
+		if c != "api" {
+			out = append(out, c)
+		}
+	}
+	return out
+}()
 
 // rolesShScript is the exact content of 00-roles.sh (shell script, no Go interpolation).
 const rolesShScript = `#!/bin/bash

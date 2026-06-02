@@ -35,6 +35,11 @@ func TestGenerateGolden(t *testing.T) {
 		"api_only": cfg([]string{"api", "auth"}, withAPI), // api on, no read-caps -> no GRANT SELECT table line
 		"api_auth": cfg([]string{"document_store", "api", "auth"}, withAPI),
 		"full":     cfg(config.Order, withAPI),
+		"languages": cfg([]string{"document_store"}, func(c *config.Config) {
+			c.Languages.PLPerl = true
+			c.Languages.PLPython = true
+			c.Languages.AllowUntrusted = true
+		}),
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -107,5 +112,40 @@ func copyTree(t *testing.T, src, dst string) {
 		return os.WriteFile(target, b, 0o644)
 	}); err != nil {
 		t.Fatalf("copy %s->%s: %v", src, dst, err)
+	}
+}
+
+func TestEnvSecretSizes(t *testing.T) {
+	// api enabled, NO secrets in config -> Generate must random-fill .env with pinned hex sizes.
+	c := &config.Config{Capabilities: map[string]bool{"document_store": true, "api": true}}
+	c.ApplyDefaults()
+	out := t.TempDir()
+	if err := Generate(c, out); err != nil {
+		t.Fatal(err)
+	}
+	env, err := os.ReadFile(filepath.Join(out, ".env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]int{"POSTGRES_PASSWORD": 48, "AUTHENTICATOR_PASSWORD": 32, "JWT_SECRET": 96}
+	for _, line := range strings.Split(string(env), "\n") {
+		k, v, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		if n, found := want[k]; found {
+			if len(v) != n {
+				t.Errorf("%s: want %d hex chars, got %d (%q)", k, n, len(v), v)
+			}
+			for _, r := range v {
+				if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')) {
+					t.Errorf("%s: non-hex char %q", k, r)
+				}
+			}
+			delete(want, k)
+		}
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing env keys: %v", want)
 	}
 }
