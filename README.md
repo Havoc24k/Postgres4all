@@ -206,22 +206,25 @@ it does not start the stack.
 
 ## Go CLI (in progress)
 
-A Go rewrite of `setup.sh` is underway — a single static binary with a subcommand interface. Install
-and the in-place update engine are ported:
+A Go rewrite of `setup.sh` — a single static binary with a subcommand interface. **All commands are
+ported**, so the binary is a full replacement for the bash script:
 
 ```bash
 go build ./cmd/postgres4all
-./postgres4all generate --config config.json          # write build/ (no Docker)
-./postgres4all install  --config config.json          # generate + docker compose up
-./postgres4all update   --config config.json           # add capabilities to a running install (data-safe)
-./postgres4all update --allow-drop --config config.json  # also drop removed capabilities
+./postgres4all generate         --config config.json    # write build/ (no Docker)
+./postgres4all install          --config config.json    # generate + docker compose up
+./postgres4all update           --config config.json    # add capabilities to a running install (data-safe)
+./postgres4all update --allow-drop --config config.json # also drop removed capabilities
+./postgres4all apply-functions                          # apply functions/*.sql + reload PostgREST
 ```
 
-`generate`/`install`/`update` are behavioral ports of the bash paths (the update delta engine
-preserves data, reuses secrets, and runs the same phased apply); only `apply-functions` is still served
-by `./setup.sh` during the port (the Go stub points you there). The bash tool and the Go binary produce
-a compatible `build/`, so they coexist. Internals: typed config, `text/template` generation with embedded
-SQL fragments, `crypto/rand` secrets, golden-file tests for both generation and the delta SQL (`go test ./...`).
+Each command is a behavioral port of the matching bash path — the update delta engine preserves data,
+reuses secrets, and runs the same phased apply; `apply-functions` concatenates `functions/*.sql` and
+applies them in one transaction. The bash `setup.sh` is kept as the behavioral reference and produces a
+compatible `build/`, so the two coexist (bash can be retired once you've adopted the binary). Internals:
+typed config + `Validate()`, `text/template` generation with embedded SQL fragments, `crypto/rand`
+secrets, `os/exec` Docker orchestration, and golden-file tests for generation and the delta SQL
+(`go test ./...`, byte-checked against the bash output).
 
 ## Try each capability
 
