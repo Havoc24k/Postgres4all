@@ -26,6 +26,7 @@ Elasticsearch, Pinecone, PostGIS stacks, time-series DBs, Snowflake, and a hand-
 - [`config.json`](#configjson)
 - [Updating an existing install](#updating-an-existing-install)
 - [Custom business logic (`/rpc`)](#custom-business-logic-rpc)
+- [Go CLI (in progress)](#go-cli-in-progress)
 - [Try each capability](#try-each-capability)
 - [REST API](#rest-api)
 - [The honest caveat](#the-honest-caveat)
@@ -202,6 +203,22 @@ it does not start the stack.
 > pick up language changes.
 
 ---
+
+## Go CLI (in progress)
+
+A Go rewrite of `setup.sh` is underway — a single static binary with a subcommand interface. Phase 1
+(config + generation + install) already works:
+
+```bash
+go build ./cmd/postgres4all
+./postgres4all generate --config config.json   # write build/ (no Docker)
+./postgres4all install  --config config.json   # generate + docker compose up
+```
+
+`generate`/`install` are drop-in for the bash install path; `update` and `apply-functions` are still
+served by `./setup.sh` during the port (the Go stubs point you there). The bash tool and the Go binary
+produce a compatible `build/`, so they coexist. Internals: typed config, `text/template` generation with
+embedded SQL fragments, `crypto/rand` secrets, golden-file tests (`go test ./...`).
 
 ## Try each capability
 
