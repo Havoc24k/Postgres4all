@@ -1,39 +1,58 @@
 # Examples
 
-One runnable example per capability, against the seeded demo data.
+One runnable example per capability — each one driving the **HTTP API** (PostgREST), and each one
+showing its business logic in **both PL/pgSQL and PL/Python**.
 
-1. Enable the capability (and its deps) in `config.json`, then `./postgres4all install`.
-2. Run the example (from the repo root). The `.sql` ones run against the database; the `.sh` ones
-   talk to PostgREST on `http://localhost:3000`.
+The point of the project is that Postgres gives you these capabilities *and* an API for free, so the
+examples talk to `http://localhost:3000`, not `psql`. Where a capability is a plain query, that's a
+native REST call (`GET /products?attributes=cs.{...}`). Where it needs server-side logic — vector
+KNN, GIS distance, a row-locking dequeue — the example defines a small `/rpc` function in **both**
+languages and calls each, so you can compare them side by side.
 
-### Run a `.sql` example
+## Setup
 
-The reliable way (runs inside the db container — no host Postgres client needed):
+1. Enable the capability (plus its deps) **and** PL/Python in `config.json`:
 
-```bash
-docker compose --env-file build/.env -f build/docker-compose.yml exec -T db \
-  psql -U postgres -d app < examples/document_store.sql
-```
+   ```jsonc
+   {
+     "capabilities": { "vector": true, "api": true },
+     "languages": { "plpython": true, "allow_untrusted": true }
+   }
+   ```
 
-…or, if you have `psql` on your host and host→container networking is happy:
+   `api` is required by every example (it's the HTTP layer). `plpython3u` is **untrusted** — it runs
+   with the database OS user's privileges — which is why `allow_untrusted` must be set deliberately.
+   Languages are installed at build time, so enable them before `install` (changing them later needs
+   a fresh build).
 
-```bash
-DB_URL="postgres://postgres:$(grep '^POSTGRES_PASSWORD=' build/.env | cut -d= -f2-)@localhost:5432/app"
-psql "$DB_URL" -f examples/document_store.sql
-```
+2. `./postgres4all install`
 
-### All examples
+3. Run an example:
 
-| Example | Capability needed |
-|---|---|
-| `document_store.sql` | 📄 `document_store` |
-| `job_queue.sql` | 📬 `job_queue` |
-| `search.sql` | 🔍 `search` |
-| `vector.sql` | 🧠 `vector` |
-| `gis.sql` | 🗺️ `gis` |
-| `timeseries.sql` | 📈 `timeseries` |
-| `dashboards.sql` | 📊 `dashboards` + `timeseries` |
-| `api.sh` | 🔌 `api` + `document_store` — `bash examples/api.sh` |
-| `auth.sh` | 🔐 `auth` + `api` — `bash examples/auth.sh` (needs `openssl` to sign a test JWT) |
+   ```bash
+   bash examples/vector.sh
+   ```
 
-Each file's header comment lists the exact capabilities it needs.
+## What each example shows
+
+| Example | Capability needed | API surface it demonstrates |
+|---|---|---|
+| `document_store.sh` | `document_store` + `api` | `GET ?attributes=cs.{…}` (containment) + `/rpc` in both languages |
+| `job_queue.sh` | `job_queue` + `api` | `GET /jobs` + `SECURITY DEFINER` dequeue `/rpc` in both languages |
+| `search.sh` | `search` + `api` | `GET ?tsv=wfts(…)` (full-text) + typo-tolerant `/rpc` in both languages |
+| `vector.sh` | `vector` + `api` | KNN + relational filter `/rpc` in both languages |
+| `gis.sh` | `gis` + `api` | nearest-neighbour distance `/rpc` in both languages |
+| `timeseries.sh` | `timeseries` + `api` | `GET` time window + windowed-count `/rpc` in both languages |
+| `dashboards.sh` | `dashboards` + `timeseries` + `api` | `GET /event_daily` (rollup) + `/rpc` in both languages |
+| `api.sh` | `document_store` + `api` | REST endpoints + GraphQL resolved by `/rpc` in both languages |
+| `auth.sh` | `auth` + `api` | JWT + row-level security; isolation holds through an `/rpc` in both languages |
+
+All examples need `"languages": { "plpython": true, "allow_untrusted": true }` so the PL/Python
+halves can run.
+
+## How the `/rpc` functions get defined
+
+To keep each example self-contained, the scripts define their functions inline (via
+`examples/lib.sh`'s `define_sql`) and tell PostgREST to reload. In a real project that SQL would
+live in `functions/` and you'd apply it with `./postgres4all apply-functions` — see
+`functions/example_submit.sql`.

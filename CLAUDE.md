@@ -95,4 +95,4 @@ Version constants live in `internal/generate/generate.go` (`PGMajor`, `PostGISVe
 - Everything lives in the `public` schema so PostgREST and pg_graphql expose it with zero extra config.
 - Each capability's schema is in `internal/generate/capabilities/<cap>.schema.sql`, headed by a comment naming the system it replaces, with a runnable example query in the trailing comment. (These are embedded into the binary via `//go:embed`.)
 - Grants (built by `writeAPIGrants` in `internal/generate/generate.go`, assembled into `build/init/03-api-grants.sql`) are deliberately permissive for a demo (anon reads everything). Tighten before any real use.
-- The historical bash implementation and its design specs/plans live under `docs/superpowers/` for reference; the bash `setup.sh` has been retired in favor of the Go binary.
+- The original bash `setup.sh` has been retired; the Go binary is the sole implementation. Runnable, API-first demos live under `examples/` (one per capability, each in PL/pgSQL and PL/Python).
