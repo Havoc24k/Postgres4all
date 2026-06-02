@@ -44,7 +44,15 @@ _build_up() {
 }
 
 # Stubs (filled in later tasks):
-query_installed() { die "internal: query_installed not implemented"; }
+query_installed() {
+  # Start ONLY db (not postgrest, whose role may not exist yet); --remove-orphans clears a
+  # now-absent postgrest. Volume already confirmed to exist by the caller.
+  _compose up -d --remove-orphans db
+  _wait_db_healthy
+  local reg; reg="$(_psql_q "SELECT to_regclass('p4a_meta.capabilities')")"
+  [ "$reg" = "p4a_meta.capabilities" ] || die "no p4a_meta.capabilities table — this does not look like a managed install."
+  _psql_q "SELECT string_agg(cap, ',') FROM p4a_meta.capabilities" | tr -d '[:space:]'
+}
 
 emit_pre_sql() {
   # Roles, created idempotently on the CURRENT image BEFORE the rebuild (only when api is newly added),
@@ -423,8 +431,6 @@ fi
 # api orchestration flags
 api_added=0
 for c in "${ADD[@]}"; do if [ "$c" = api ]; then api_added=1; fi; done
-api_removed=0
-for c in "${REMOVE[@]}"; do if [ "$c" = api ]; then api_removed=1; fi; done
 
 if [ "$DRY_RUN" = 1 ]; then
   echo "===== PRE ====="
@@ -436,5 +442,28 @@ if [ "$DRY_RUN" = 1 ]; then
   exit 0
 fi
 
-# live execution added in Task 7
-die "internal: live update execution not implemented"
+# Ensure db is up on the current image (query_installed already did this for the live path;
+# harmless to repeat). --remove-orphans removes a now-absent postgrest before we touch roles.
+_compose up -d --remove-orphans db
+_wait_db_healthy
+
+# Phase 0: roles before the rebuild (only when api is newly added)
+if [ "$api_added" = 1 ]; then echo "phase 0: creating role chain..."; emit_pre_sql | _apply_sql; fi
+
+# Phase 1: drops on the current image (binaries still present)
+if [ "${#REMOVE[@]}" -gt 0 ]; then echo "phase 1: applying removals..."; emit_remove_sql | _apply_sql; fi
+
+# Phase 2: rebuild + recreate (named volume preserved; orphan postgrest removed)
+echo "phase 2: rebuilding image and recreating container..."
+_build_up
+_wait_db_healthy
+
+# Phase 3: adds on the new image (new binaries present)
+if [ "${#ADD[@]}" -gt 0 ]; then
+  echo "phase 3: applying additions..."
+  emit_add_sql | _apply_sql
+  # PostgREST started in Phase 2; make it reload its schema cache for the new grants.
+  if [ "$api_added" = 1 ]; then _compose restart postgrest >/dev/null 2>&1 || true; fi
+fi
+
+echo "update complete. installed: $(_psql_q "SELECT string_agg(cap, ', ' ORDER BY cap) FROM p4a_meta.capabilities")"
