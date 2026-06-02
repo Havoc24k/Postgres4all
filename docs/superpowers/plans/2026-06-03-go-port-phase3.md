@@ -139,7 +139,7 @@ func newApplyFunctionsCmd() *cobra.Command {
 				return err
 			}
 			if n == 0 {
-				fmt.Printf("no functions to apply (%s has no .sql files).\n", dir)
+				fmt.Printf("no functions to apply (%s/ has no .sql files).\n", dir)
 				return nil
 			}
 			if dryRun {

@@ -4,91 +4,80 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A single Postgres container (plus a PostgREST sidecar) configured to demonstrate that Postgres can stand in for MongoDB, Redis/RabbitMQ, Elasticsearch, Pinecone, PostGIS GIS stacks, time-series DBs, Snowflake, and a hand-written API layer. There is **no application code** — the entire project is `setup.sh`, `config.json`, and per-capability SQL fragments in `init/capabilities/`. Behavior is defined by SQL and Docker, not by a running language process. See `README.md` for the capability-to-replaced-system mapping and example queries.
+A tool that provisions a single Postgres container (plus an optional PostgREST sidecar) to demonstrate that Postgres can stand in for MongoDB, Redis/RabbitMQ, Elasticsearch, Pinecone, PostGIS GIS stacks, time-series DBs, Snowflake, and a hand-written API layer. The deliverable is **`postgres4all`, a single Go binary** (`cmd/postgres4all` + `internal/`) that generates a Docker stack from a `config.json` and orchestrates it. The per-capability SQL is data (embedded fragments), not application code. See `README.md` for the capability-to-replaced-system mapping and example queries.
 
 ## Commands
 
 ```bash
-cp config.example.json config.json   # then enable the capabilities you want
-./setup.sh                           # generates build/ and starts Docker
-./setup.sh --dry-run                 # generate build/ without starting Docker
-docker compose -f build/docker-compose.yml down      # stop (keeps data volume)
-docker compose -f build/docker-compose.yml down -v   # stop AND drop the data volume  <-- needed to re-run init scripts
+go build ./cmd/postgres4all                  # build ./postgres4all
+cp config.example.json config.json           # enable the capabilities you want
+./postgres4all generate                      # write build/ (no Docker)
+./postgres4all install                       # generate + docker compose up
+./postgres4all update [--allow-drop]         # change capabilities on a running install (data-safe)
+./postgres4all apply-functions               # apply functions/*.sql + reload PostgREST
+go test ./...                                # the test suite (table + golden)
 
+docker compose -f build/docker-compose.yml down      # stop (keeps data volume)
+docker compose -f build/docker-compose.yml down -v   # stop AND drop the data volume
 psql postgres://postgres:<POSTGRES_PASSWORD>@localhost:5432/app   # direct SQL
 curl http://localhost:3000/products                              # REST API (PostgREST)
 ```
 
-Postgres listens on `localhost:5432`, PostgREST on `localhost:3000`.
+Postgres listens on `localhost:5432`, PostgREST on `localhost:3000`. The binary operates on the
+current working directory (`config.json`, `functions/`, `build/` are cwd-relative) — run it from the
+project root.
 
 ## Provisioning model (most important thing to know)
 
-There is no static Dockerfile/compose/init SQL in the repo root anymore — `setup.sh` GENERATES them
-into `build/` from `config.json` plus the per-capability fragments in `init/capabilities/`. The flow:
+There is no static Dockerfile/compose/init SQL in the repo — `postgres4all` GENERATES them into `build/`
+from `config.json` plus embedded per-capability fragments. `build/` is git-ignored and regenerated each
+run — NEVER hand-edit it; edit the Go source and the fragments under `internal/generate/capabilities/`.
 
-1. User copies `config.example.json` to `config.json` and toggles capabilities.
-2. `./setup.sh` validates the config, assembles `build/` (Dockerfile, docker-compose.yml, .env, and
-   `build/init/00-roles.sh` + `01-extensions.sql` + `02-schema.sql` + `03-api-grants.sql` + `04-meta.sql`), then runs
-   `docker compose` from it. `./setup.sh --dry-run` stops after generation (used by the test suite).
-3. `build/` is generated and git-ignored — NEVER hand-edit it; edit `init/capabilities/*` or `setup.sh`.
+Flow: `install` validates the config, calls `generate.Generate(cfg, "build")` to assemble `build/`
+(Dockerfile, docker-compose.yml, .env, and `build/init/00-roles.sh` + `01-extensions.sql` +
+`02-schema.sql` + `03-api-grants.sql` + `04-meta.sql`), then runs `docker compose` from it. `generate`
+stops after writing `build/`. The generated init scripts follow Postgres' rule: they run once, in
+filename order, only on a **fresh** data volume — so on an existing install use `update` to change
+capabilities without losing data; a `down -v` + `install` only to start over.
 
-The generated init scripts still follow Postgres' rule: they run once, in filename order, only on a
-fresh data volume. So on a fresh volume `./setup.sh` provisions everything via those init scripts; on an
-existing install, use `./setup.sh --update` (see "Updating in place" below) to change capabilities
-without losing data. A full `down -v` + `./setup.sh` is only needed if you want to start over from scratch.
+### Package map (`internal/`)
+- **`config`** — typed `Config`, `Load`, `Validate` (aggregates all problems: ≥1 capability, `auth`→`api`,
+  `dashboards`→`timeseries`, `plpython` gating). `config.Order` is the canonical capability order.
+- **`secrets`** — `Hex(n)` via `crypto/rand` (`POSTGRES_PASSWORD`=Hex(24), `AUTHENTICATOR_PASSWORD`=Hex(16),
+  `JWT_SECRET`=Hex(48) on the random path).
+- **`generate`** — `Generate(cfg, outDir)` writes `build/` via embedded `text/template` files
+  (`templates/*.tmpl`) + embedded capability SQL (`capabilities/*.sql`, the single source of truth).
+  Exports `ExtensionMap`, `ReadTableMap`, `ReadCapabilitySQL`, `GeneratedImage`. Every init SQL file
+  begins with `-- generated by postgres4all; do not edit`. Lean image: `postgres:17` base unless `gis`
+  (then `postgis/postgis:17-3.5`); pgvector/pg_graphql/language packages installed only when their
+  capability/language is on. Schema fragments concatenated in canonical order (`timeseries` before
+  `dashboards`, since the `event_daily` matview reads `events`).
+- **`update`** — `Delta(target, installed)` + `EmitPreSQL`/`EmitAddSQL`/`EmitRemoveSQL`. The phased
+  apply (in `cmd/postgres4all/update.go`): Phase 0 idempotent roles (before the rebuild, so PostgREST
+  doesn't crash-loop) → Phase 1 drops on the current image → `BuildUp` (`up -d --build --remove-orphans`,
+  volume preserved, buildkit fallback) → Phase 3 adds on the new image, each one `psql --single-transaction`.
+  Tables are always granted AFTER they're created; removing `api` REVOKEs the superuser-owned default-priv
+  ACL before dropping `anon`; secrets are reused from `build/.env`. The delta SQL is golden-tested
+  byte-for-byte (the goldens were captured from the now-retired bash and remain the oracle).
+- **`functions`** — `EmitSQL(dir)` concatenates `functions/*.sql` (sorted) + `NOTIFY pgrst, 'reload schema'`.
+  `apply-functions` (in `cmd/`) applies them in one transaction to a running install and reloads PostgREST.
+  A function doing privileged writes for unprivileged callers must be `SECURITY DEFINER` (see
+  `functions/example_submit.sql`).
+- **`dockerx`** — `os/exec` wrappers: `Compose{Dir}` with `Run`/`ApplySQL`/`QueryInstalled`/`VolumeName`/
+  `WaitHealthy`/`BuildUp`/`UpDB`, and `Preflight`/`VolumeExists`/`EnvValue`.
 
-`setup.sh` keeps capability flags in a bash associative array `EN` (`${EN[vector]}` etc). Each
-capability owns `init/capabilities/<cap>.schema.sql` and optionally `<cap>.seed.sql`; the assembler
-concatenates the enabled ones in a fixed canonical order (`timeseries` before `dashboards`, since the
-`event_daily` matview reads the `events` table). Run the generator tests with `./test/test_setup.sh`
-(pure bash, no Docker — uses `--dry-run`).
-
-**Updating in place:** `./setup.sh --update` (add) / `--update --allow-drop` (add + remove) changes
-capabilities without `down -v`. It reads the installed set from `p4a_meta.capabilities` (a dedicated
-schema, never exposed by PostgREST), computes ADD/REMOVE, and applies a delta in phases: Phase 0 creates
-the role chain (idempotent, before the rebuild so PostgREST doesn't crash-loop) → Phase 1 drops on the
-current image → `up -d --build --remove-orphans` (volume preserved) → Phase 3 adds on the new image,
-each a single `psql --single-transaction`. Tables are always granted AFTER they're created; removing
-`api` REVOKEs the superuser-owned default-priv ACL before dropping `anon`. Update reuses prior secrets
-from `build/.env`. Per-capability teardown is in `init/capabilities/<cap>.drop.sql`. Update logic is
-unit-tested by `test/test_update.sh` via `--update --dry-run --installed "<csv>"` (no Docker). Note:
-toggling `gis` swaps the postgres/postgis image base (different glibc) and triggers a benign Postgres
-collation-version-mismatch warning.
-
-**Custom functions:** user business logic lives in top-level `functions/*.sql` (not generated, not
-init — user space). `./setup.sh --apply-functions` concatenates them (LC_ALL=C sorted) and runs one
-`psql --single-transaction`, with `NOTIFY pgrst, 'reload schema'` as the last statement so PostgREST
-serves the new `/rpc` endpoints live. It is handled in its own branch BEFORE any config read (so it
-needs no `config.json`), requires an existing install (pgdata volume), and reads `PG_USER`/`PG_DB`
-from `build/.env`. `--apply-functions --dry-run` prints the SQL with no Docker (tested by
-`test/test_functions.sh`). A function doing privileged writes for unprivileged callers must be
-`SECURITY DEFINER` (see `functions/example_submit.sql`). Procedural languages beyond `plpgsql` are
-install-time toggles in the `languages` config: `plperl` (trusted) and `plpython` (untrusted
-`plpython3u`, gated behind `allow_untrusted`); they add apt installs (`postgresql-plperl-17` —
-lang-then-version) to `build/Dockerfile` and `CREATE EXTENSION` to `01-extensions.sql`. Changing a
-language needs a fresh build (down -v); it is not wired into `--update`.
-
-## Go port (in progress)
-
-A Go rewrite of `setup.sh` lives under `cmd/postgres4all` + `internal/`. It coexists with bash (both
-produce a compatible `build/`); bash + its `test/*.sh` stay the behavioral reference and remain green.
-- `internal/config` — typed `Config`, `Load`, `Validate` (replaces `jq`). `internal/secrets` — `crypto/rand` hex.
-- `internal/generate` — `Generate(cfg, outDir)` writes `build/` via embedded `text/template` + embedded
-  capability `.sql` fragments (synced to `init/capabilities/` by a test); exports `ExtensionMap`/`ReadTableMap`/`ReadCapabilitySQL`.
-- `internal/update` — `Delta` + `EmitPreSQL`/`EmitAddSQL`/`EmitRemoveSQL` (the delta SQL, golden-tested
-  byte-for-byte against bash `--update --dry-run`).
-- `internal/functions` — `EmitSQL(dir)` concatenates `functions/*.sql` (sorted) + `NOTIFY pgrst`.
-- `internal/dockerx` — `os/exec` wrappers (`Compose`, `ApplySQL`, `QueryInstalled`, `BuildUp` with a
-  buildkit fallback, `WaitHealthy`, …).
-- `cmd/postgres4all` — cobra; ALL commands ported: `generate`/`install`/`update`/`apply-functions` (no
-  stubs). The Go binary is a full replacement for `setup.sh`; bash is kept as the behavioral reference.
-Tests: `go test ./...` (table + golden, byte-checked vs bash). Generated init SQL carries `-- generated by postgres4all; do not edit`.
+`p4a_meta.capabilities` (a dedicated schema, never exposed by PostgREST) records the installed set;
+`update` reads it to compute the delta. Per-capability teardown is `capabilities/<cap>.drop.sql`.
+Procedural languages (`languages` config: `plperl` trusted, `plpython`/`plpython3u` untrusted+gated)
+are **install-time** — they change the image (apt `postgresql-plperl-17`, lang-then-version) and
+extensions; changing one on a running install needs a fresh build (`update` does not pick them up).
+Toggling `gis` swaps the postgres/postgis base (different glibc) → a benign collation-version warning.
 
 ## Architecture
 
 Two containers (defined in the generated `build/docker-compose.yml`):
 
-- **db** — always present; built from the generated `build/Dockerfile`. Base is `postgis/postgis:17-3.5` when the `gis` capability is enabled, otherwise the lighter `postgres:17`. pgvector is added via apt only when `vector` is enabled; pg_graphql via an arch-aware prebuilt `.deb` from the Supabase release (amd64/arm64 selected at build time) only when `api` is enabled. Both base images carry the PGDG apt repo and the contrib modules; of these the assembler only ever activates `pg_trgm` (`CREATE EXTENSION`), and only when `search` is enabled.
+- **db** — always present; built from the generated `build/Dockerfile`. Base is `postgis/postgis:17-3.5` when the `gis` capability is enabled, otherwise the lighter `postgres:17`. pgvector is added via apt only when `vector` is enabled; pg_graphql via an arch-aware prebuilt `.deb` from the Supabase release (amd64/arm64) only when `api` is enabled. Both base images carry the PGDG apt repo and the contrib modules; of these the generator only ever activates `pg_trgm` (`CREATE EXTENSION`), and only when `search` is enabled.
 - **postgrest** — `postgrest/postgrest:v12.2.3`. Connects as the `authenticator` login role and switches to `anon` (no JWT) or `authenticated` (valid JWT) per request. Only present when the `api` capability is enabled.
 
 **The PostgREST security model** spans three generated init files and is the trickiest part:
@@ -99,10 +88,11 @@ Two containers (defined in the generated `build/docker-compose.yml`):
 
 ## Versioning
 
-Versions are pinned in `setup.sh` (Postgres base image, pg_graphql version, PostgREST image tag). To move versions, change these in `setup.sh` and keep Postgres / PostGIS / pgvector / pg_graphql / PostgREST mutually compatible. Changing `PG_MAJOR` also changes the PostGIS base image tag and the pg_graphql `.deb` URL — both derive from it.
+Version constants live in `internal/generate/generate.go` (`PGMajor`, `PostGISVersion`, `PgGraphQLVersion`, `PostgRESTImage`, `GeneratedImage`). To move versions, change them there and keep Postgres / PostGIS / pgvector / pg_graphql / PostgREST mutually compatible. `PGMajor` also drives the PostGIS base image tag and the pg_graphql `.deb` URL.
 
 ## Conventions
 
 - Everything lives in the `public` schema so PostgREST and pg_graphql expose it with zero extra config.
-- Each capability's schema is in `init/capabilities/<cap>.schema.sql`, headed by a comment naming the system it replaces, with a runnable example query in the trailing comment.
-- Grants in `init/capabilities/` (assembled into `build/init/03-api-grants.sql`) are deliberately permissive for a demo (anon reads everything). Tighten before any real use.
+- Each capability's schema is in `internal/generate/capabilities/<cap>.schema.sql`, headed by a comment naming the system it replaces, with a runnable example query in the trailing comment. (These are embedded into the binary via `//go:embed`.)
+- Grants (built by `writeAPIGrants` in `internal/generate/generate.go`, assembled into `build/init/03-api-grants.sql`) are deliberately permissive for a demo (anon reads everything). Tighten before any real use.
+- The historical bash implementation and its design specs/plans live under `docs/superpowers/` for reference; the bash `setup.sh` has been retired in favor of the Go binary.

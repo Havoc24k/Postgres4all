@@ -4,7 +4,7 @@
 
 **One Postgres container that does the job of your entire backend stack.**
 
-Pick the capabilities you want in a `config.json`, run one script, and get a single
+Pick the capabilities you want in a `config.json`, run one command, and get a single
 Postgres (plus an optional PostgREST API) that stands in for MongoDB, Redis/RabbitMQ,
 Elasticsearch, Pinecone, PostGIS stacks, time-series DBs, Snowflake, and a hand-written API layer.
 
@@ -13,7 +13,7 @@ Elasticsearch, Pinecone, PostGIS stacks, time-series DBs, Snowflake, and a hand-
 ![pgvector](https://img.shields.io/badge/pgvector-HNSW-4169e1)
 ![pg_graphql](https://img.shields.io/badge/pg__graphql-1.5.11-e10098)
 ![PostgREST](https://img.shields.io/badge/PostgREST-v12.2.3-009639)
-![License](https://img.shields.io/badge/runs%20on-Docker-2496ed?logo=docker&logoColor=white)
+![Go](https://img.shields.io/badge/built%20with-Go-00add8?logo=go&logoColor=white)
 
 </div>
 
@@ -26,7 +26,6 @@ Elasticsearch, Pinecone, PostGIS stacks, time-series DBs, Snowflake, and a hand-
 - [`config.json`](#configjson)
 - [Updating an existing install](#updating-an-existing-install)
 - [Custom business logic (`/rpc`)](#custom-business-logic-rpc)
-- [Go CLI (in progress)](#go-cli-in-progress)
 - [Try each capability](#try-each-capability)
 - [REST API](#rest-api)
 - [The honest caveat](#the-honest-caveat)
@@ -59,18 +58,22 @@ their tables, their extensions, and (for the API) the PostgREST container.
 
 ## Quick start
 
+`postgres4all` is a single Go binary with a subcommand interface. Build it once, then drive everything
+from `config.json`:
+
 ```bash
-cp config.example.json config.json   # then enable the capabilities you want
-./setup.sh                           # generates build/ and starts Docker
+go build ./cmd/postgres4all                  # produces ./postgres4all
+cp config.example.json config.json           # then enable the capabilities you want
+./postgres4all install                       # generate build/ and start Docker
 ```
 
-`setup.sh` reads `config.json`, generates an inspectable `build/` directory (Dockerfile,
+`install` reads `config.json`, generates an inspectable `build/` directory (Dockerfile,
 `docker-compose.yml`, `.env`, assembled `init/*`), then runs `docker compose` from it. Only the
 selected capabilities are provisioned. See exactly what will run before it does:
 
 ```bash
-cat build/init/02-schema.sql        # the assembled schema
-./setup.sh --dry-run                # generate build/ without starting Docker
+./postgres4all generate              # write build/ without starting Docker
+cat build/init/02-schema.sql         # inspect the assembled schema
 ```
 
 Once it's up — Postgres on `localhost:5432`, REST API on `localhost:3000`:
@@ -80,7 +83,8 @@ psql postgres://postgres:<POSTGRES_PASSWORD>@localhost:5432/app
 ```
 
 > [!IMPORTANT]
-> **Prerequisites:** `docker`, `docker compose`, `jq`, `openssl`.
+> **Prerequisites:** `go` (to build the binary), `docker`, and `docker compose`. No `jq`/`openssl`
+> needed — config parsing and secret generation are built in.
 
 ---
 
@@ -88,7 +92,7 @@ psql postgres://postgres:<POSTGRES_PASSWORD>@localhost:5432/app
 
 `capabilities` is a map of the nine features to booleans; only the enabled ones are provisioned.
 
-- **Dependencies** (enforced — `setup.sh` errors if violated): `dashboards` requires `timeseries`;
+- **Dependencies** (enforced — `postgres4all` errors if violated): `dashboards` requires `timeseries`;
   `auth` requires `api`.
 - **`seed_demo_data`** (default `true`) controls whether the demo rows are loaded.
 - **Secrets** (`postgres.password`, and `api.authenticator_password` / `api.jwt_secret` when `api`
@@ -96,6 +100,8 @@ psql postgres://postgres:<POSTGRES_PASSWORD>@localhost:5432/app
   (mode `0600`). API users read `JWT_SECRET` from `build/.env` to mint tokens.
 - **Networking:** the database (5432) and REST API (3000) bind to `127.0.0.1` only by default. Set
   `"publish_externally": true` in the `postgres` block to bind on all interfaces.
+- **Languages:** `plpgsql` is always available; enable `plperl` (trusted) and `plpython` (untrusted,
+  gated) in a `languages` block — see [Custom business logic](#custom-business-logic-rpc).
 
 ```jsonc
 {
@@ -112,7 +118,8 @@ psql postgres://postgres:<POSTGRES_PASSWORD>@localhost:5432/app
     "api":            false,
     "auth":           false
   },
-  "api": { "authenticator_password": "", "jwt_secret": "" }
+  "api": { "authenticator_password": "", "jwt_secret": "" },
+  "languages": { "plperl": false, "plpython": false, "allow_untrusted": false }
 }
 ```
 
@@ -121,9 +128,10 @@ psql postgres://postgres:<POSTGRES_PASSWORD>@localhost:5432/app
 > characters `@ : / ? #` in it (auto-generated values are hex and safe).
 
 > [!NOTE]
-> `docker compose up --build` needs buildx ≥ 0.17.0. On older Docker, build with the legacy builder
-> first: `DOCKER_BUILDKIT=0 docker build -t postgres4all:generated build/`, then
-> `docker compose --env-file build/.env -f build/docker-compose.yml up -d`.
+> The image build needs buildx ≥ 0.17.0. On older Docker, `update` falls back to the legacy builder
+> automatically; for `install` you can build manually first:
+> `DOCKER_BUILDKIT=0 docker build -t postgres4all:generated build/`, then
+> `docker compose --env-file build/.env -f build/docker-compose.yml up -d` (after `./postgres4all generate`).
 
 ---
 
@@ -132,11 +140,11 @@ psql postgres://postgres:<POSTGRES_PASSWORD>@localhost:5432/app
 Change capabilities on a **running** install without wiping data — edit `config.json`, then:
 
 ```bash
-./setup.sh --update              # add newly-enabled capabilities (non-destructive)
-./setup.sh --update --allow-drop # also drop capabilities removed from config (destroys their data)
+./postgres4all update                # add newly-enabled capabilities (non-destructive)
+./postgres4all update --allow-drop   # also drop capabilities removed from config (destroys their data)
 ```
 
-`--update` diffs your config against the capabilities recorded in the database
+`update` diffs your config against the capabilities recorded in the database
 (`p4a_meta.capabilities`) and applies only the difference, in phases — create the API role chain if
 needed → drop removed capabilities → rebuild & recreate the container (the `pgdata` volume is
 **preserved**, so data survives) → add new capabilities. Each phase is a single transaction, so an
@@ -146,10 +154,10 @@ so the superuser password, the PostgREST authenticator password, and the JWT key
 Preview a delta without touching anything:
 
 ```bash
-./setup.sh --update --dry-run --installed "document_store" config.json
+./postgres4all update --dry-run --installed "document_store"
 ```
 
-A plain `./setup.sh` refuses if an install already exists — use `--update`, or
+A plain `./postgres4all install` refuses if an install already exists — use `update`, or
 `docker compose -f build/docker-compose.yml down -v` to deliberately start over.
 
 > [!WARNING]
@@ -165,15 +173,15 @@ A plain `./setup.sh` refuses if an install already exists — use `--update`, or
 Drop SQL functions into the top-level `functions/` directory and apply them to a running install:
 
 ```bash
-./setup.sh --apply-functions             # apply functions/*.sql, then reload PostgREST
-./setup.sh --apply-functions --dry-run   # print the SQL without applying
+./postgres4all apply-functions             # apply functions/*.sql, then reload PostgREST
+./postgres4all apply-functions --dry-run   # print the SQL without applying
 ```
 
 Each function in the `public` schema becomes a `POST /rpc/<name>` endpoint (or `GET` if `STABLE`).
 Files are applied in one transaction (all-or-nothing) using your `CREATE OR REPLACE` definitions, so
 re-applying is how you ship edits. A function can leverage any enabled capability — the shipped
 `functions/example_submit.sql` writes a document **and** enqueues a job in a single call (it needs
-`document_store`, `job_queue`, and `api`). `--apply-functions` reloads an already-running PostgREST;
+`document_store`, `job_queue`, and `api`). `apply-functions` reloads an already-running PostgREST;
 it does not start the stack.
 
 > [!TIP]
@@ -199,32 +207,10 @@ it does not start the stack.
 > `plpython` uses `plpython3u`, an **untrusted** language (functions run with the database OS user's
 > full privileges). It is gated behind `"allow_untrusted": true` and is unsafe for code you didn't
 > write. Languages are **install-time**: enabling one on an already-running install requires a fresh
-> build (`docker compose -f build/docker-compose.yml down -v` then `./setup.sh`) — `--update` does not
-> pick up language changes.
+> build (`docker compose -f build/docker-compose.yml down -v` then `./postgres4all install`) — `update`
+> does not pick up language changes.
 
 ---
-
-## Go CLI (in progress)
-
-A Go rewrite of `setup.sh` — a single static binary with a subcommand interface. **All commands are
-ported**, so the binary is a full replacement for the bash script:
-
-```bash
-go build ./cmd/postgres4all
-./postgres4all generate         --config config.json    # write build/ (no Docker)
-./postgres4all install          --config config.json    # generate + docker compose up
-./postgres4all update           --config config.json    # add capabilities to a running install (data-safe)
-./postgres4all update --allow-drop --config config.json # also drop removed capabilities
-./postgres4all apply-functions                          # apply functions/*.sql + reload PostgREST
-```
-
-Each command is a behavioral port of the matching bash path — the update delta engine preserves data,
-reuses secrets, and runs the same phased apply; `apply-functions` concatenates `functions/*.sql` and
-applies them in one transaction. The bash `setup.sh` is kept as the behavioral reference and produces a
-compatible `build/`, so the two coexist (bash can be retired once you've adopted the binary). Internals:
-typed config + `Validate()`, `text/template` generation with embedded SQL fragments, `crypto/rand`
-secrets, `os/exec` Docker orchestration, and golden-file tests for generation and the delta SQL
-(`go test ./...`, byte-checked against the bash output).
 
 ## Try each capability
 
@@ -298,10 +284,15 @@ a valid JWT signed with `JWT_SECRET`; row-level security then limits every read/
 
 ## Notes
 
+- **How it works:** `postgres4all` (Go, under `cmd/` + `internal/`) generates the `build/` directory
+  from `config.json` using embedded `text/template` files and embedded per-capability SQL fragments
+  (`internal/generate/capabilities/*.sql`), then orchestrates `docker compose`. `build/` is
+  git-ignored and regenerated each run — never hand-edit it. Run the test suite with `go test ./...`.
 - **Pinned versions:** Postgres 17 + PostGIS 3.5, pgvector from PGDG, pg_graphql v1.5.11,
-  PostgREST v12.2.3. Change `PG_MAJOR` / `POSTGIS_VERSION` / `PG_GRAPHQL_VERSION` in `setup.sh` to
-  move versions (keep them mutually compatible).
+  PostgREST v12.2.3. Change the version constants in `internal/generate/generate.go` to move versions
+  (keep them mutually compatible).
 - **Multi-arch:** the image builds for both amd64 and arm64 (the pg_graphql `.deb` is selected by
   architecture).
 - **Security:** demo grants are deliberately permissive (anon can read everything). Tighten them in
-  the relevant `init/capabilities/*.sql` fragment and the grants block of `setup.sh` before any real use.
+  the relevant `internal/generate/capabilities/*.sql` fragment and the grants builder in
+  `internal/generate/generate.go` before any real use.

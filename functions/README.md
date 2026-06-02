@@ -6,11 +6,11 @@ plus a `GRANT EXECUTE … TO anon|authenticated|<role>`. PostgREST exposes any f
 
 Apply them to a running install (idempotent, all-or-nothing, reloads PostgREST):
 
-    ./setup.sh --apply-functions
+    ./postgres4all apply-functions
 
 Preview without applying:
 
-    ./setup.sh --apply-functions --dry-run
+    ./postgres4all apply-functions --dry-run
 
 Notes:
 - Use `CREATE OR REPLACE` so re-applying is safe — that's how you ship edits.
