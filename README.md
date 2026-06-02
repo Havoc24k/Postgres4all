@@ -100,6 +100,8 @@ curl -X POST http://localhost:3000/rpc/submit_product \ # call your own /rpc bus
   -d '{"name":"Keyboard","attributes":{"wireless":true}}'
 ```
 
+Runnable, seeded versions of all of these live in [`examples/`](examples/) — one per capability.
+
 ---
 
 ## Configure
