@@ -206,19 +206,22 @@ it does not start the stack.
 
 ## Go CLI (in progress)
 
-A Go rewrite of `setup.sh` is underway — a single static binary with a subcommand interface. Phase 1
-(config + generation + install) already works:
+A Go rewrite of `setup.sh` is underway — a single static binary with a subcommand interface. Install
+and the in-place update engine are ported:
 
 ```bash
 go build ./cmd/postgres4all
-./postgres4all generate --config config.json   # write build/ (no Docker)
-./postgres4all install  --config config.json   # generate + docker compose up
+./postgres4all generate --config config.json          # write build/ (no Docker)
+./postgres4all install  --config config.json          # generate + docker compose up
+./postgres4all update   --config config.json           # add capabilities to a running install (data-safe)
+./postgres4all update --allow-drop --config config.json  # also drop removed capabilities
 ```
 
-`generate`/`install` are drop-in for the bash install path; `update` and `apply-functions` are still
-served by `./setup.sh` during the port (the Go stubs point you there). The bash tool and the Go binary
-produce a compatible `build/`, so they coexist. Internals: typed config, `text/template` generation with
-embedded SQL fragments, `crypto/rand` secrets, golden-file tests (`go test ./...`).
+`generate`/`install`/`update` are behavioral ports of the bash paths (the update delta engine
+preserves data, reuses secrets, and runs the same phased apply); only `apply-functions` is still served
+by `./setup.sh` during the port (the Go stub points you there). The bash tool and the Go binary produce
+a compatible `build/`, so they coexist. Internals: typed config, `text/template` generation with embedded
+SQL fragments, `crypto/rand` secrets, golden-file tests for both generation and the delta SQL (`go test ./...`).
 
 ## Try each capability
 
