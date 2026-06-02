@@ -42,6 +42,18 @@ concatenates the enabled ones in a fixed canonical order (`timeseries` before `d
 `event_daily` matview reads the `events` table). Run the generator tests with `./test/test_setup.sh`
 (pure bash, no Docker — uses `--dry-run`).
 
+**Updating in place:** `./setup.sh --update` (add) / `--update --allow-drop` (add + remove) changes
+capabilities without `down -v`. It reads the installed set from `p4a_meta.capabilities` (a dedicated
+schema, never exposed by PostgREST), computes ADD/REMOVE, and applies a delta in phases: Phase 0 creates
+the role chain (idempotent, before the rebuild so PostgREST doesn't crash-loop) → Phase 1 drops on the
+current image → `up -d --build --remove-orphans` (volume preserved) → Phase 3 adds on the new image,
+each a single `psql --single-transaction`. Tables are always granted AFTER they're created; removing
+`api` REVOKEs the superuser-owned default-priv ACL before dropping `anon`. Update reuses prior secrets
+from `build/.env`. Per-capability teardown is in `init/capabilities/<cap>.drop.sql`. Update logic is
+unit-tested by `test/test_update.sh` via `--update --dry-run --installed "<csv>"` (no Docker). Note:
+toggling `gis` swaps the postgres/postgis image base (different glibc) and triggers a benign Postgres
+collation-version-mismatch warning.
+
 ## Architecture
 
 Two containers (defined in the generated `build/docker-compose.yml`):

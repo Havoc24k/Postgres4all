@@ -54,6 +54,33 @@ By default the database (5432) and REST API (3000) bind to `127.0.0.1` only. Set
 > the legacy builder first: `DOCKER_BUILDKIT=0 docker build -t postgres-everything:generated build/`,
 > then `docker compose --env-file build/.env -f build/docker-compose.yml up -d`.
 
+### Updating an existing install
+
+Change capabilities on a running install WITHOUT wiping data — edit `config.json`, then:
+
+```bash
+./setup.sh --update              # add newly-enabled capabilities (non-destructive)
+./setup.sh --update --allow-drop # also drop capabilities removed from config (destroys their data)
+```
+
+`--update` diffs your config against the capabilities recorded in the database (`p4a_meta.capabilities`)
+and applies only the difference: create the API role chain if needed, drop removed capabilities, rebuild
+and recreate the container (the `pgdata` volume is preserved, so existing data survives), then add new
+capabilities — each step a single transaction. Existing secrets in `build/.env` are reused, so the
+superuser password, the PostgREST authenticator password, and the JWT key stay stable across updates.
+
+Preview a delta without touching anything:
+`./setup.sh --update --dry-run --installed "document_store" config.json`.
+
+A plain `./setup.sh` refuses if an install already exists — use `--update`, or
+`docker compose -f build/docker-compose.yml down -v` to deliberately start over.
+
+> **Caveat — adding/removing `gis`:** this swaps the image base between the `postgres` and
+> `postgis/postgis` images, which ship different glibc versions. Postgres will log a one-time
+> `collation version mismatch` WARNING after the swap. Data is intact and the demo works as-is; for
+> production-grade correctness, `REINDEX` text indexes and run
+> `ALTER DATABASE <db> REFRESH COLLATION VERSION` after such a change.
+
 ## Try each capability
 
 ```sql
