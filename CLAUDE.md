@@ -33,8 +33,9 @@ into `build/` from `config.json` plus the per-capability fragments in `init/capa
 3. `build/` is generated and git-ignored — NEVER hand-edit it; edit `init/capabilities/*` or `setup.sh`.
 
 The generated init scripts still follow Postgres' rule: they run once, in filename order, only on a
-fresh data volume. To change capabilities you must edit `config.json`, wipe the volume
-(`docker compose -f build/docker-compose.yml down -v`), and re-run `./setup.sh`.
+fresh data volume. So on a fresh volume `./setup.sh` provisions everything via those init scripts; on an
+existing install, use `./setup.sh --update` (see "Updating in place" below) to change capabilities
+without losing data. A full `down -v` + `./setup.sh` is only needed if you want to start over from scratch.
 
 `setup.sh` keeps capability flags in a bash associative array `EN` (`${EN[vector]}` etc). Each
 capability owns `init/capabilities/<cap>.schema.sql` and optionally `<cap>.seed.sql`; the assembler
