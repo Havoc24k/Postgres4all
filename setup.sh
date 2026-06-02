@@ -45,8 +45,59 @@ _build_up() {
 
 # Stubs (filled in later tasks):
 query_installed() { die "internal: query_installed not implemented"; }
-emit_pre_sql()    { :; }
-emit_add_sql()    { :; }
+
+emit_pre_sql() {
+  # Roles, created idempotently on the CURRENT image BEFORE the rebuild (only when api is newly added),
+  # so PostgREST (started in Phase 2) finds the authenticator role.
+  local apw apw_esc
+  apw="$(grep '^AUTHENTICATOR_PASSWORD=' build/.env | cut -d= -f2-)"
+  apw_esc="${apw//\'/\'\'}"
+  cat <<SQL
+DO \$\$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='anon') THEN CREATE ROLE anon NOLOGIN; END IF; END \$\$;
+DO \$\$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='authenticated') THEN CREATE ROLE authenticated NOLOGIN; END IF; END \$\$;
+DO \$\$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='authenticator') THEN CREATE ROLE authenticator NOINHERIT LOGIN PASSWORD '${apw_esc}'; END IF; END \$\$;
+GRANT anon, authenticated TO authenticator;
+SQL
+  return 0
+}
+
+emit_add_sql() {
+  local SEED; SEED="$(jq -r 'if .seed_demo_data == null then "true" else (.seed_demo_data|tostring) end' "$CONFIG")"
+  local api_added=0; for c in "${ADD[@]}"; do [ "$c" = api ] && api_added=1; done
+  local api_eff=0; [ "${EN[api]}" = 1 ] && api_eff=1   # api present after this delta
+
+  if [ "$api_added" = 1 ]; then
+    echo "CREATE EXTENSION IF NOT EXISTS pg_graphql;"
+    echo "GRANT USAGE ON SCHEMA public TO anon, authenticated;"
+    local rt=""
+    for c in document_store job_queue search vector gis timeseries dashboards; do
+      [ "${INST[$c]:-0}" = 1 ] && rt="${rt:+$rt, }${READ_TABLE[$c]}"
+    done
+    [ -n "$rt" ] && echo "GRANT SELECT ON $rt TO anon, authenticated;"
+    [ "${INST[auth]:-0}" = 1 ] && echo "GRANT SELECT, INSERT, UPDATE, DELETE ON notes TO authenticated;"
+    echo "GRANT USAGE ON SCHEMA graphql TO anon, authenticated;"
+    echo "GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA graphql TO anon, authenticated;"
+    echo "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO anon;"
+  fi
+
+  local SCHEMA_ORDER=(document_store job_queue search vector gis timeseries dashboards auth)
+  for c in "${SCHEMA_ORDER[@]}"; do
+    local in_add=0; for a in "${ADD[@]}"; do [ "$a" = "$c" ] && in_add=1; done
+    [ "$in_add" = 1 ] || continue
+    [ -n "${EXT_OF[$c]:-}" ] && echo "CREATE EXTENSION IF NOT EXISTS ${EXT_OF[$c]};"
+    cat "init/capabilities/$c.schema.sql"; echo
+    if [ "$SEED" = "true" ] && [ -f "init/capabilities/$c.seed.sql" ]; then cat "init/capabilities/$c.seed.sql"; echo; fi
+    if [ "$api_eff" = 1 ]; then
+      [ -n "${READ_TABLE[$c]:-}" ] && echo "GRANT SELECT ON ${READ_TABLE[$c]} TO anon, authenticated;"
+      [ "$c" = auth ] && echo "GRANT SELECT, INSERT, UPDATE, DELETE ON notes TO authenticated;"
+    fi
+    echo "INSERT INTO p4a_meta.capabilities (cap) VALUES ('$c') ON CONFLICT (cap) DO NOTHING;"
+  done
+
+  [ "$api_added" = 1 ] && echo "INSERT INTO p4a_meta.capabilities (cap) VALUES ('api') ON CONFLICT (cap) DO NOTHING;"
+  return 0
+}
+
 emit_remove_sql() { :; }
 
 DRY_RUN=0
