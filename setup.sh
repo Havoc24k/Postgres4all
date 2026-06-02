@@ -43,7 +43,6 @@ _build_up() {
   rm -f "$err"
 }
 
-# Stubs (filled in later tasks):
 query_installed() {
   # Start ONLY db (not postgrest, whose role may not exist yet); --remove-orphans clears a
   # now-absent postgrest. Volume already confirmed to exist by the caller.
@@ -394,6 +393,11 @@ if [ "$UPDATE" = 0 ]; then
 fi
 
 # ---------- UPDATE MODE ----------
+# Dry-run cannot query a live DB for the installed set, so it must be supplied.
+if [ "$DRY_RUN" = 1 ] && [ "$INSTALLED_GIVEN" = 0 ]; then
+  die "--update --dry-run requires --installed <csv> (no live database is queried in dry-run mode)"
+fi
+
 # Determine INSTALLED set.
 if [ "$INSTALLED_GIVEN" = 1 ]; then
   installed_list="$INSTALLED_CSV"

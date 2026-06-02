@@ -28,7 +28,7 @@ into `build/` from `config.json` plus the per-capability fragments in `init/capa
 
 1. User copies `config.example.json` to `config.json` and toggles capabilities.
 2. `./setup.sh` validates the config, assembles `build/` (Dockerfile, docker-compose.yml, .env, and
-   `build/init/00-roles.sh` + `01-extensions.sql` + `02-schema.sql` + `03-api-grants.sql`), then runs
+   `build/init/00-roles.sh` + `01-extensions.sql` + `02-schema.sql` + `03-api-grants.sql` + `04-meta.sql`), then runs
    `docker compose` from it. `./setup.sh --dry-run` stops after generation (used by the test suite).
 3. `build/` is generated and git-ignored — NEVER hand-edit it; edit `init/capabilities/*` or `setup.sh`.
 
