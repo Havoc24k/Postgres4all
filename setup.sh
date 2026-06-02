@@ -35,7 +35,7 @@ _build_up() {
   trap 'rm -f "$err"' RETURN
   if _compose up -d --build --remove-orphans 2>"$err"; then rm -f "$err"; return 0; fi
   if grep -qi 'buildx' "$err"; then
-    DOCKER_BUILDKIT=0 docker build -t postgres-everything:generated build/ \
+    DOCKER_BUILDKIT=0 docker build -t postgres4all:generated build/ \
       && _compose up -d --no-build --remove-orphans
   else
     cat "$err" >&2; rm -f "$err"; die "docker build/up failed"
@@ -340,7 +340,7 @@ if [ "$PUBLISH_EXT" = 1 ]; then BIND_PREFIX=""; else BIND_PREFIX="127.0.0.1:"; f
   echo "services:"
   echo "  db:"
   echo "    build: ."
-  echo "    image: postgres-everything:generated"
+  echo "    image: postgres4all:generated"
   echo "    restart: unless-stopped"
   echo "    environment:"
   echo "      POSTGRES_USER: \${POSTGRES_USER}"
