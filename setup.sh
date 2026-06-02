@@ -98,7 +98,29 @@ emit_add_sql() {
   return 0
 }
 
-emit_remove_sql() { :; }
+emit_remove_sql() {
+  local api_removed=0; for c in "${REMOVE[@]}"; do [ "$c" = api ] && api_removed=1; done
+  local SCHEMA_ORDER=(document_store job_queue search vector gis timeseries dashboards auth)
+  local i c r in_rem
+  for (( i=${#SCHEMA_ORDER[@]}-1 ; i>=0 ; i-- )); do
+    c="${SCHEMA_ORDER[$i]}"
+    in_rem=0; for r in "${REMOVE[@]}"; do [ "$r" = "$c" ] && in_rem=1; done
+    [ "$in_rem" = 1 ] || continue
+    cat "init/capabilities/$c.drop.sql"; echo
+    [ -n "${EXT_OF[$c]:-}" ] && echo "DROP EXTENSION IF EXISTS ${EXT_OF[$c]};"
+    echo "DELETE FROM p4a_meta.capabilities WHERE cap = '$c';"
+  done
+  if [ "$api_removed" = 1 ]; then
+    echo "ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE SELECT ON TABLES FROM anon;"
+    echo "DROP OWNED BY authenticator, anon, authenticated;"
+    echo "DROP ROLE IF EXISTS authenticator;"
+    echo "DROP ROLE IF EXISTS authenticated;"
+    echo "DROP ROLE IF EXISTS anon;"
+    echo "DROP EXTENSION IF EXISTS pg_graphql;"
+    echo "DELETE FROM p4a_meta.capabilities WHERE cap = 'api';"
+  fi
+  return 0
+}
 
 DRY_RUN=0
 UPDATE=0

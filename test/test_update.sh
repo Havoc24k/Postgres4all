@@ -70,5 +70,24 @@ section ADD | grep -q "INSERT INTO p4a_meta.capabilities (cap) VALUES ('api')" &
 upd '{"capabilities":{"document_store":true,"vector":true,"api":true},"api":{"authenticator_password":"apw"}}' 'document_store'
 section ADD | awk '/CREATE TABLE documents/{c=NR} /GRANT SELECT ON documents/{g=NR} END{exit !(c&&g&&c<g)}' && ok "add api+new cap: documents create-before-grant" || bad "add api+new cap ordering"
 
+# --- REMOVE: drop fragment + drop extension + meta delete ---
+upd '{"capabilities":{"document_store":true}}' 'document_store,search' --allow-drop
+section REMOVE | grep -q 'DROP TABLE IF EXISTS articles CASCADE' && ok "remove: drop articles" || bad "remove drop table"
+section REMOVE | grep -q 'DROP EXTENSION IF EXISTS pg_trgm' && ok "remove: drop pg_trgm" || bad "remove drop ext"
+section REMOVE | grep -q "DELETE FROM p4a_meta.capabilities WHERE cap = 'search'" && ok "remove: meta delete" || bad "remove meta delete"
+
+# --- REMOVE: data cap without its own extension does not emit DROP EXTENSION ---
+upd '{"capabilities":{"search":true}}' 'search,document_store' --allow-drop
+section REMOVE | grep -q 'DROP TABLE IF EXISTS products CASCADE' && ok "remove: drop products" || bad "remove products"
+section REMOVE | grep -qE 'DROP EXTENSION' && bad "document_store has no ext to drop" || ok "remove: no spurious ext drop"
+
+# --- REMOVE api: REVOKE default-priv BEFORE drop role; drop roles + pg_graphql; single pg_graphql drop ---
+upd '{"capabilities":{"document_store":true}}' 'document_store,api' --allow-drop
+section REMOVE | grep -q 'ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE SELECT ON TABLES FROM anon' && ok "remove api: revoke default priv" || bad "remove api revoke"
+section REMOVE | awk '/REVOKE SELECT ON TABLES FROM anon/{r=NR} /DROP ROLE IF EXISTS anon/{d=NR} END{exit !(r&&d&&r<d)}' && ok "remove api: revoke before drop role" || bad "remove api revoke-order"
+section REMOVE | grep -q 'DROP EXTENSION IF EXISTS pg_graphql' && ok "remove api: drop pg_graphql" || bad "remove api ext"
+[ "$(upd '{"capabilities":{"document_store":true}}' 'document_store,api' --allow-drop; section REMOVE | grep -c 'DROP EXTENSION IF EXISTS pg_graphql')" = 1 ] && ok "remove api: pg_graphql dropped once" || bad "remove api ext double-drop"
+section REMOVE | grep -qE 'DROP ROLE IF EXISTS authenticator' && ok "remove api: drops roles" || bad "remove api roles"
+
 echo "----"; echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ]
