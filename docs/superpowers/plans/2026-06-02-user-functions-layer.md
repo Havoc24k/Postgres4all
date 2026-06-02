@@ -40,6 +40,11 @@ Notes:
 - All files are applied in one transaction; a syntax error in any file rolls everything back.
 - A function written in a non-default language (e.g. `plperl`) needs that language enabled in
   `config.json`'s `languages` block at install time.
+- Granting `EXECUTE … TO anon, authenticated` only works when `api` is enabled (those roles exist
+  only then). The shipped `example_submit.sql` therefore needs `document_store`, `job_queue`, AND
+  `api`; its grant is guarded so it still applies cleanly without `api`.
+- **Deleting a function file does NOT drop the function from the database** — run
+  `DROP FUNCTION <name>(<args>)` yourself if you want it gone.
 ```
 
 - [ ] **Step 2: Create `functions/example_submit.sql`**
@@ -47,7 +52,11 @@ Notes:
 ```sql
 -- Example business logic: store a document (document_store) AND enqueue a job (job_queue),
 -- atomically, then return the new id. Exposed at: POST /rpc/submit_product
--- Requires the `document_store` and `job_queue` capabilities to be enabled.
+--
+-- Requires: document_store + job_queue (the products/jobs tables), AND api enabled for the
+-- /rpc endpoint to be reachable. The GRANT below targets PostgREST's anon/authenticated roles,
+-- which exist ONLY when api is enabled — so it is guarded with an IF EXISTS check, meaning this
+-- file applies cleanly even on a non-api install (the function is created; it just isn't granted).
 CREATE OR REPLACE FUNCTION submit_product(name text, attributes jsonb DEFAULT '{}'::jsonb)
 RETURNS jsonb
 LANGUAGE plpgsql
@@ -66,7 +75,14 @@ BEGIN
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION submit_product(text, jsonb) TO anon, authenticated;
+-- Grant to the PostgREST roles only if they exist (i.e. api is enabled), so a single-transaction
+-- apply on a non-api install does not roll back on "role does not exist".
+DO $$
+BEGIN
+    IF EXISTS (SELECT FROM pg_roles WHERE rolname = 'anon') THEN
+        GRANT EXECUTE ON FUNCTION submit_product(text, jsonb) TO anon, authenticated;
+    END IF;
+END $$;
 ```
 
 - [ ] **Step 3: Verify + commit**
@@ -143,7 +159,7 @@ other apt installs). Use:
     echo "RUN apt-get update && apt-get install -y --no-install-recommends${pkgs} && rm -rf /var/lib/apt/lists/*"
   fi
 ```
-Note: `${pkgs}` begins with a leading space, so the emitted line reads `... --no-install-recommends postgresql-17-plperl ...`. Confirm the spacing in the generated Dockerfile is valid.
+Note on package names (DO NOT "fix" these): the procedural-language packages are **lang-then-version** — `postgresql-plperl-${PG_MAJOR}` and `postgresql-plpython3-${PG_MAJOR}` (i.e. `postgresql-plperl-17`). This deliberately differs from the *extension* packages elsewhere in this Dockerfile, which are version-then-name (`postgresql-17-pgvector`). Verified against the live PGDG repo. `${pkgs}` begins with a leading space, so the emitted line reads `... --no-install-recommends postgresql-plperl-17 ...`; confirm the spacing in the generated Dockerfile is valid.
 
 - [ ] **Step 5: Emit language `CREATE EXTENSION` into 01-extensions.sql**
 
@@ -181,13 +197,22 @@ git commit -m "feat: languages config (plperl trusted; plpython gated untrusted)
 
 **Files:** Modify `setup.sh`; create `test/test_functions.sh`
 
+**CRITICAL placement requirement (from plan hardening):** `config.json` is gitignored and absent on a
+clean tree, and the existing `setup.sh` dies at `[ -f "$CONFIG" ] || die "config file not found"`
+(and at `no capabilities enabled`, and at the new plpython gate) — all of which run BEFORE the normal
+`cd`/generation. `--apply-functions` must therefore be handled in its own branch placed **immediately
+after the arg-parse `while` loop and its guards, BEFORE the `CONFIG` defaulting / preflight / config
+read / validation**, and it must never read `$CONFIG`, `cap()`, `EN[]`, or the validation/gating. The
+branch gives itself its own `cd` and always `exit`s. (Otherwise the command — and this whole test
+harness, which passes no config — is broken.)
+
 - [ ] **Step 1: Create the functions test harness**
 
 Create `test/test_functions.sh` (`chmod +x`):
 ```bash
 #!/usr/bin/env bash
 # Functions-apply tests. Drive setup.sh --apply-functions --dry-run (prints the SQL it would apply,
-# no Docker/DB).
+# no Docker/DB, no config.json needed).
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
@@ -196,58 +221,71 @@ ok()  { echo "ok   - $1"; PASS=$((PASS+1)); }
 bad() { echo "FAIL - $1"; FAIL=$((FAIL+1)); }
 
 OUT="$(./setup.sh --apply-functions --dry-run 2>&1)"; RC=$?
-
-[ $RC -eq 0 ] && ok "apply-functions --dry-run exits 0" || bad "apply dry-run rc=$RC"
+[ $RC -eq 0 ] && ok "apply-functions --dry-run exits 0" || bad "apply dry-run rc=$RC ($OUT)"
 echo "$OUT" | grep -q 'CREATE OR REPLACE FUNCTION submit_product' && ok "includes example function" || bad "example function missing"
 echo "$OUT" | grep -q "NOTIFY pgrst, 'reload schema'" && ok "includes schema reload" || bad "reload missing"
 
-# --apply-functions cannot combine with --update
-out2="$(./setup.sh --apply-functions --update --dry-run 2>&1)"; rc2=$?
-{ [ $rc2 -ne 0 ] && echo "$out2" | grep -qi 'cannot be combined'; } && ok "apply+update rejected" || bad "apply+update guard"
+# multiple files concatenated in deterministic sorted order
+t1="functions/00_aaa_test.sql"; t2="functions/zz_zzz_test.sql"
+printf -- '-- MARKER_AAA\n' > "$t1"; printf -- '-- MARKER_ZZZ\n' > "$t2"
+O2="$(./setup.sh --apply-functions --dry-run 2>&1)"
+{ echo "$O2" | grep -q 'MARKER_AAA' && echo "$O2" | grep -q 'MARKER_ZZZ'; } && ok "multi-file: both present" || bad "multi-file presence"
+echo "$O2" | awk '/MARKER_AAA/{a=NR} /MARKER_ZZZ/{z=NR} END{exit !(a&&z&&a<z)}' && ok "multi-file: sorted order" || bad "multi-file order"
+rm -f "$t1" "$t2"
+
+# combination guards: apply-functions cannot combine with --update / --allow-drop / --installed
+for combo in "--update" "--allow-drop" "--installed x"; do
+  # shellcheck disable=SC2086
+  o="$(./setup.sh --apply-functions $combo --dry-run 2>&1)"; r=$?
+  { [ $r -ne 0 ] && echo "$o" | grep -qi 'cannot be combined'; } && ok "apply+$combo rejected" || bad "apply+$combo guard ($o)"
+done
 
 echo "----"; echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ]
 ```
 
-- [ ] **Step 2: Run, verify failure** — `./test/test_functions.sh` → fails (flag not handled).
+- [ ] **Step 2: Run, verify failure** — `./test/test_functions.sh` → fails (flag not handled; first
+assertion currently dies on "config file not found", which is exactly the bug Step 3/4 fix).
 
-- [ ] **Step 3: Add `--apply-functions` to the arg parser**
+- [ ] **Step 3: Arg parser + guards (apply guards placed BEFORE the require-update guards)**
 
-In the `while` arg-parse loop in `setup.sh`, add a case (before the `--*) die unknown` catch-all):
+In the `while` arg-parse loop, add a case (before the `--*) die unknown` catch-all):
 ```bash
     --apply-functions) APPLY_FUNCTIONS=1 ;;
 ```
-Initialize `APPLY_FUNCTIONS=0` alongside the other flag defaults. After the loop, add guards
-(alongside the existing `--allow-drop`/`--installed` guards):
+Initialize `APPLY_FUNCTIONS=0` alongside the other flag defaults. IMMEDIATELY after the `while` loop,
+and **before** the existing `--allow-drop requires --update` / `--installed requires --update` guards
+(so the clearer message wins), add:
 ```bash
-if [ "$APPLY_FUNCTIONS" = 1 ] && [ "$UPDATE" = 1 ]; then die "--apply-functions cannot be combined with --update"; fi
-if [ "$APPLY_FUNCTIONS" = 1 ] && [ "$ALLOW_DROP" = 1 ]; then die "--apply-functions cannot be combined with --allow-drop"; fi
+if [ "$APPLY_FUNCTIONS" = 1 ] && [ "$UPDATE" = 1 ];        then die "--apply-functions cannot be combined with --update"; fi
+if [ "$APPLY_FUNCTIONS" = 1 ] && [ "$ALLOW_DROP" = 1 ];    then die "--apply-functions cannot be combined with --allow-drop"; fi
+if [ "$APPLY_FUNCTIONS" = 1 ] && [ "$INSTALLED_GIVEN" = 1 ]; then die "--apply-functions cannot be combined with --installed"; fi
 ```
 
-- [ ] **Step 4: Add the apply-functions emit helper + early branch**
+- [ ] **Step 4: Emit helper + the relocated apply branch (BEFORE config reading)**
 
-Add a helper near the other emit functions:
+Add the helper near the other emit functions (deterministic byte-order sort, space-safe):
 ```bash
 emit_functions_sql() {
-  # Concatenate functions/*.sql in sorted order; print nothing if none exist.
+  # Concatenate functions/*.sql in deterministic (LC_ALL=C) sorted order; print nothing if none exist.
   local f found=0
-  for f in functions/*.sql; do
+  while IFS= read -r f; do
     [ -e "$f" ] || continue
     found=1
-    echo "-- ${f}"
+    printf -- '-- %s\n' "$f"
     cat "$f"
     echo
-  done
+  done < <(printf '%s\n' functions/*.sql | LC_ALL=C sort)
   [ "$found" = 1 ] && echo "NOTIFY pgrst, 'reload schema';"
   return 0
 }
 ```
-Then add the apply-functions handling. It must run BEFORE the normal install/update branching but
-AFTER `cd "$(dirname "$0")"` (so `functions/` resolves) — note `--apply-functions` does NOT need
-`build/` generation. Place this block right after the `cd "$(dirname "$0")"` (and after the OLD_*
-secret capture is irrelevant here). Implement:
+Then add the apply branch. Place it AFTER the arg-parse guards (Step 3) and **BEFORE** the `CONFIG`
+defaulting/preflight/config-read/validation block (it must not touch `$CONFIG`). It gives itself its
+own `cd`:
 ```bash
 if [ "$APPLY_FUNCTIONS" = 1 ]; then
+  cd "$(dirname "$0")"   # resolve functions/*.sql relative to the script
   if ! ls functions/*.sql >/dev/null 2>&1; then
     echo "no functions to apply (functions/ has no .sql files)."
     exit 0
@@ -260,16 +298,13 @@ if [ "$APPLY_FUNCTIONS" = 1 ]; then
   die "internal: live apply-functions not implemented"
 fi
 ```
-IMPORTANT: `--apply-functions` needs `cd "$(dirname "$0")"` to have run so `functions/*.sql` is
-relative to the script dir. Verify the `cd` precedes this block; if the `cd` currently sits later
-(inside the generation path), MOVE a `cd "$(dirname "$0")"` to before this block, or compute an
-absolute functions path. The dry-run path must not require `build/` or Docker.
 
 - [ ] **Step 5: Run tests, verify pass**
 
-Run: `./test/test_functions.sh` → `FAIL=0`. Run `./test/test_setup.sh` and (if present)
-`./test/test_update.sh` → `FAIL=0`. `bash -n setup.sh` ok.
-Manual: `./setup.sh --apply-functions --dry-run` → prints the example function SQL + the NOTIFY line.
+Run: `./test/test_functions.sh` → `FAIL=0` (incl. the multi-file order and three combination guards).
+Run `./test/test_setup.sh` and `./test/test_update.sh` → `FAIL=0`. `bash -n setup.sh` ok.
+Manual: `./setup.sh --apply-functions --dry-run` (NO config arg) → prints the example function SQL +
+the NOTIFY line, exit 0 (proves the branch runs before the config-not-found die).
 
 - [ ] **Step 6: Commit**
 
@@ -286,30 +321,40 @@ git commit -m "feat: --apply-functions arg wiring + dry-run (concatenate functio
 
 - [ ] **Step 1: Implement the live apply**
 
-Replace `die "internal: live apply-functions not implemented"` with:
+Replace `die "internal: live apply-functions not implemented"` with EXACTLY:
 ```bash
-  # Live: require an existing install, bring db up, apply all functions in one transaction, reload.
+  # Live apply. This path skips build/ generation, so do its own preflight + read PG_USER/PG_DB
+  # (the exact names _apply_sql uses) from the existing build/.env, hardened under set -euo pipefail.
+  for t in docker jq; do command -v "$t" >/dev/null 2>&1 || die "missing required tool: $t"; done
+  docker compose version >/dev/null 2>&1 || die "missing required tool: docker compose"
+  [ -f build/.env ] || die "build/.env not found — run ./setup.sh first, then --apply-functions."
+  PG_USER="$(grep '^POSTGRES_USER=' build/.env | cut -d= -f2-)" || true
+  PG_DB="$(grep '^POSTGRES_DB=' build/.env | cut -d= -f2-)" || true
+  [ -n "$PG_USER" ] || die "POSTGRES_USER missing from build/.env"
+  [ -n "$PG_DB" ]   || die "POSTGRES_DB missing from build/.env"
+
   vol="$(_pgdata_volume_name)"
   if [ -z "$vol" ] || ! docker volume inspect "$vol" >/dev/null 2>&1; then
     die "no existing install found (no pgdata volume). Run './setup.sh' first, then --apply-functions."
   fi
-  _compose up -d --remove-orphans db
+
+  # Bring up the WHOLE stack (db + postgrest if api was enabled), so the in-transaction NOTIFY reload
+  # reaches a live PostgREST even if the stack was fully down. --remove-orphans matches the compose file.
+  _compose up -d --remove-orphans
   _wait_db_healthy
   echo "applying $(ls functions/*.sql | wc -l | tr -d ' ') function file(s)..."
   emit_functions_sql | _apply_sql
-  echo "functions applied; PostgREST schema reloaded."
+  echo "functions applied; PostgREST schema reloaded (if running)."
   exit 0
 ```
-Note: `_apply_sql` runs `psql -v ON_ERROR_STOP=1 --single-transaction -U "$PG_USER" -d "$PG_DB"`.
-`PG_USER`/`PG_DB` are set during `.env` generation — which for `--apply-functions` does NOT run
-(we skip `build/` generation). So set them for this path: read from the existing `build/.env`:
-```bash
-  PG_USER="$(grep '^POSTGRES_USER=' build/.env | cut -d= -f2-)"
-  PG_DB="$(grep '^POSTGRES_DB=' build/.env | cut -d= -f2-)"
-```
-Place these reads BEFORE the `_compose`/`_apply_sql` calls (right after the volume check). If
-`build/.env` is missing, `die "build/.env not found — run ./setup.sh first"`. Adjust the exact
-variable names to match what `_apply_sql`/`_psql_q` reference (`PG_USER`/`PG_DB`).
+Notes:
+- `_apply_sql` is `psql -v ON_ERROR_STOP=1 --single-transaction -U "$PG_USER" -d "$PG_DB"` — the
+  NOTIFY emitted as the last line of `emit_functions_sql` runs inside that single transaction
+  (delivered on COMMIT, suppressed on ROLLBACK). Do NOT move it to a separate `_psql_q` call.
+- `_compose up -d --remove-orphans` (no service filter) brings up exactly the services in the existing
+  `build/docker-compose.yml` — so `postgrest` starts iff `api` was enabled at install. If there is no
+  postgrest service, the NOTIFY is a harmless no-op and the functions are still applied (callable via
+  `psql`); the echo says "if running".
 
 - [ ] **Step 2: Static check + no regression**
 
@@ -392,10 +437,31 @@ curl -s "http://127.0.0.1:3000/rpc/perl_upper?t=hello"   # -> "HELLO"
 rm -f functions/zz_perl_demo.sql
 ```
 This step doubles as a live confirmation that the languages caveat (extension must exist on the
-running DB) is real and that a `plperl` function works once the language is present. If buildx/time
-makes this impractical, document it as verified-by-reasoning and skip.
+running DB) is real and that a `plperl` function works once the language is present. The `docker build`
+with `plperl:true` is **REQUIRED even if the rest is skipped** — it is the only real validation that the
+corrected package name `postgresql-plperl-17` actually resolves (the bash tests only grep the generated
+Dockerfile string). If buildx/time makes the curl impractical, at minimum run the build and confirm it
+succeeds; document the curl as verified-by-reasoning.
 
-- [ ] **Step 5: Guard + teardown**
+- [ ] **Step 5: Non-default credentials path (exercises the build/.env read)**
+
+The live apply reads `PG_USER`/`PG_DB` from `build/.env`. The runs above use the defaults
+(`postgres`/`app`). Do one quick run proving a non-default user/db is honored:
+```bash
+docker compose --env-file build/.env -f build/docker-compose.yml down -v
+cat > config.json <<'JSON'
+{ "postgres": { "user": "appuser", "db": "appdb", "password": "fn_e2e" }, "seed_demo_data": true,
+  "capabilities": { "document_store": true, "job_queue": true, "api": true } }
+JSON
+./setup.sh --dry-run config.json >/dev/null
+DOCKER_BUILDKIT=0 docker build -t postgres4all:generated build/
+docker compose --env-file build/.env -f build/docker-compose.yml up -d --no-build
+./setup.sh --apply-functions config.json    # must connect as appuser/appdb (from build/.env), not postgres/app
+docker compose --env-file build/.env -f build/docker-compose.yml exec -T db \
+  psql -U appuser -d appdb -tAc "SELECT proname FROM pg_proc WHERE proname='submit_product';"   # -> submit_product
+```
+
+- [ ] **Step 6: Guard + teardown**
 
 ```bash
 # no-install guard:
@@ -426,7 +492,13 @@ Drop SQL functions into the top-level `functions/` directory and apply them to a
 Each function in the `public` schema becomes a `POST /rpc/<name>` endpoint (or `GET` if `STABLE`).
 Files are applied in one transaction (all-or-nothing) using your `CREATE OR REPLACE` definitions, so
 re-applying is how you ship edits. A function can leverage any enabled capability — the shipped
-`functions/example_submit.sql` writes a document **and** enqueues a job in a single call.
+`functions/example_submit.sql` writes a document **and** enqueues a job in a single call (it needs
+`document_store`, `job_queue`, and `api`). `--apply-functions` reloads an already-running PostgREST;
+it does not start the stack.
+
+> [!NOTE]
+> **Deleting a `.sql` file does not drop its function** from the database — `apply-functions` is
+> additive (`CREATE OR REPLACE`). Run `DROP FUNCTION <name>(<args>)` yourself to remove one.
 
 **Other languages.** `plpgsql` is always available. Enable more in the `languages` block of
 `config.json` *at install time*:

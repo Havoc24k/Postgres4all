@@ -51,11 +51,13 @@ example, or delete the example).
      `die` with "no existing install — run ./setup.sh first". Bring `db` up if needed and wait healthy
      (reuse `query_installed`'s up+wait helpers).
   2. If `functions/` has no `.sql` files, print "no functions to apply" and exit 0.
-  3. Concatenate `functions/*.sql` in shell-sorted order and apply through one
-     `_apply_sql` invocation (`psql -v ON_ERROR_STOP=1 --single-transaction`). All-or-nothing.
-  4. `NOTIFY pgrst, 'reload schema'` (via `_psql_q`) so PostgREST reloads its schema cache and serves
-     the new endpoints without a restart. Harmless no-op if PostgREST isn't running.
-  5. Report how many files were applied.
+  3. Concatenate `functions/*.sql` in deterministic (`LC_ALL=C`) sorted order, with
+     `NOTIFY pgrst, 'reload schema'` appended as the LAST statement, and apply through one
+     `_apply_sql` invocation (`psql -v ON_ERROR_STOP=1 --single-transaction`). All-or-nothing — and
+     because `NOTIFY` is transactional, the schema reload fires on COMMIT and is suppressed on
+     rollback. (It is part of the single transaction, NOT a separate `_psql_q` call.) Harmless no-op
+     if PostgREST isn't running.
+  4. Report how many files were applied.
 - **Dry-run** (`--apply-functions --dry-run`): print the concatenated SQL that *would* be applied
   plus the `NOTIFY` line, then exit 0. Touches no Docker/DB. This is what the test suite drives.
 - Flag wiring: `--apply-functions` is mutually independent of `--update`; combining the two is an
@@ -82,11 +84,14 @@ A new top-level `languages` object in `config.json` (all optional; `plpgsql` is 
 }
 ```
 
-Generation (mirrors the existing extension toggles, so dry-run generation tests cover it):
+Generation (mirrors the existing extension toggles, so dry-run generation tests cover it). NOTE: the
+procedural-language apt packages are **lang-then-version** (`postgresql-plperl-${PG_MAJOR}`), which
+deliberately differs from the *extension* packages (`postgresql-${PG_MAJOR}-pgvector`, version-then-name).
+Verified against the live PGDG repo.
 
-- `plperl: true` → `build/Dockerfile` adds `postgresql-${PG_MAJOR}-plperl`; `build/init/01-extensions.sql`
+- `plperl: true` → `build/Dockerfile` adds `postgresql-plperl-${PG_MAJOR}`; `build/init/01-extensions.sql`
   adds `CREATE EXTENSION IF NOT EXISTS plperl;` (the **trusted** Perl language).
-- `plpython: true` → `build/Dockerfile` adds `postgresql-${PG_MAJOR}-plpython3`; `01-extensions.sql`
+- `plpython: true` → `build/Dockerfile` adds `postgresql-plpython3-${PG_MAJOR}`; `01-extensions.sql`
   adds `CREATE EXTENSION IF NOT EXISTS plpython3u;` (the only Python variant — **untrusted**).
 
 ### Untrusted gating (validation)
@@ -110,8 +115,10 @@ an already-running install therefore requires an image rebuild — a `down -v` +
 `--update` that rebuilds the image. This is documented; language deltas are intentionally **not**
 wired into the `--update` capability-delta logic (out of scope for "minimal"). The `functions/` layer
 itself is fully post-setup and re-appliable; it assumes the language a function uses is already
-installed (else the apply transaction fails with a clear `could not open extension control file` /
-`language "…" does not exist` error and rolls back).
+installed. At install time, a missing language package makes `CREATE EXTENSION` fail with
+`could not open extension control file`; at `--apply-functions` time (which only runs
+`CREATE OR REPLACE FUNCTION`, never `CREATE EXTENSION`), a function in an absent language fails with
+`language "…" does not exist` and the single-transaction apply rolls back.
 
 ## Data flow
 
@@ -145,7 +152,7 @@ edit functions/*.sql ──> ./setup.sh --apply-functions
 ## Testing strategy
 
 **Pure-bash generation tests** (extend `test/test_setup.sh`):
-- `plperl: true` → `build/Dockerfile` contains `postgresql-17-plperl`; `01-extensions.sql` contains
+- `plperl: true` → `build/Dockerfile` contains `postgresql-plperl-17`; `01-extensions.sql` contains
   `CREATE EXTENSION IF NOT EXISTS plperl`.
 - `plpython: true` without `allow_untrusted` → `setup.sh --dry-run` exits non-zero with the untrusted
   message; with `allow_untrusted: true` → `plpython3u` install + `CREATE EXTENSION IF NOT EXISTS
