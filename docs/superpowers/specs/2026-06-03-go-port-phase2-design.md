@@ -31,8 +31,8 @@ and apply the delta in phases without data loss. Replaces the Phase-1 `update` s
 
 - **`internal/update`** (new): pure delta logic + SQL emission, fully unit-testable.
   - `Delta(target *config.Config, installed []string) (add, remove []string)` — canonical-order diff.
-  - `EmitPreSQL(cfg, add) string` — idempotent role `DO`-blocks (only when api in add); reads the
-    authenticator password from a passed-in value (sourced from `build/.env`).
+  - `EmitPreSQL(authPw string) string` — idempotent role `DO`-blocks (takes no caps; the caller gates
+    on api-being-added, mirroring bash). `authPw` is the authenticator password from `build/.env`.
   - `EmitAddSQL(cfg, add, installed) string` — extensions + schema fragments (+ seed if `cfg.Seed()`) +
     grants (grant-after-create; api-add grants installed tables, loop grants new tables) + meta inserts.
   - `EmitRemoveSQL(cfg, remove) string` — drop fragments + DROP EXTENSION + (api) REVOKE-before-DROP ROLE
@@ -40,8 +40,9 @@ and apply the delta in phases without data loss. Replaces the Phase-1 `update` s
   - Reuses `internal/generate`'s embedded `capabilitiesFS` (schema/seed/drop fragments) and the
     extension/read-table maps (hoist those maps to a shared location, e.g. `internal/generate` exported,
     or a small `internal/caps` package — implementation decides; avoid duplication).
-- **`internal/dockerx`** (extend): `ApplySQL(dir, user, db string, sql string) error` (psql
-  `-v ON_ERROR_STOP=1 --single-transaction` via stdin through `compose exec -T db`), `QueryInstalled` (read
+- **`internal/dockerx`** (extend): `func (c Compose) ApplySQL(user, db, sql string) error` (psql
+  `-v ON_ERROR_STOP=1 --single-transaction` via stdin through `compose exec -T db`; method on `Compose{Dir}`),
+  `QueryInstalled` (read
   `p4a_meta.capabilities`), `WaitHealthy`, `BuildUp` (up -d --build --remove-orphans + DOCKER_BUILDKIT=0
   fallback), `UpDB` (up -d --remove-orphans db), `RestartPostgrest`, `EnvValue(dir, key)` (read build/.env).
 - **`cmd/postgres4all/update.go`** (replace stub): flags `--config`, `--allow-drop`, `--dry-run`,

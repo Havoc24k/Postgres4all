@@ -109,7 +109,8 @@ func Delta(target *config.Config, installed []string) (add, remove []string) {
 	return add, remove
 }
 
-func contains(s []string, v string) bool {
+// Contains reports membership; exported so update.go and emit.go can reuse it.
+func Contains(s []string, v string) bool {
 	for _, x := range s {
 		if x == v {
 			return true
@@ -158,7 +159,11 @@ func EmitRemoveSQL(cfg *config.Config, remove []string) string { ... }
 Implementation notes (mirror bash EXACTLY — these are the hardened invariants):
 - Use `generate.ReadCapabilitySQL("<cap>.schema.sql"/.seed.sql/.drop.sql)`, `generate.ExtensionMap`, `generate.ReadTableMap`, `config.Order`.
 - `EmitPreSQL`: three `DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='...') THEN CREATE ROLE ... END IF; END $$;` for anon/authenticated/authenticator (authenticator with `PASSWORD '<authPw doubled-quotes>'`), then `GRANT anon, authenticated TO authenticator;`.
-- `EmitAddSQL`: api_added = "api" in add; api_eff = cfg.Enabled("api"). If api_added: `CREATE EXTENSION IF NOT EXISTS pg_graphql;`, `GRANT USAGE ON SCHEMA public ...`, `GRANT SELECT ON <installed read-tables> ...` (only if non-empty), notes CRUD if auth installed, graphql grants, ALTER DEFAULT. Then for each cap in canonical schemaOrder (api excluded) that is in `add`: `CREATE EXTENSION IF NOT EXISTS <ext>` if it owns one; schema fragment; seed if cfg.Seed() and seed exists; if api_eff: `GRANT SELECT ON <table> ...` (and notes CRUD for `auth`); `INSERT INTO p4a_meta.capabilities (cap) VALUES ('<cap>') ON CONFLICT (cap) DO NOTHING;`. Then if api_added: meta insert for 'api'.
+- **Fragment fidelity (CRITICAL whitespace rule):** for every schema/seed/drop fragment, `sb.Write(bytes)` then `sb.WriteString("\n")` — the fragment bytes already end in one `\n`, and the extra `\n` reproduces bash's `cat file; echo` trailing-blank-line. Match `generate.go` writeSchema exactly. The delta SQL has NO `-- generated` header.
+- `EmitAddSQL(cfg, add, installed)`: `apiAdded := Delta-style contains(add,"api")`; `apiEff := cfg.Enabled("api")`. Build an `installed` set/`Contains(installed, …)`.
+  - **If apiAdded** (api block): `CREATE EXTENSION IF NOT EXISTS pg_graphql;`, `GRANT USAGE ON SCHEMA public TO anon, authenticated;`. Then the read-table grant — **membership keyed on `installed`, NOT cfg**: iterate `config.Order`, skip any cap absent from `generate.ReadTableMap` (this naturally drops `api` AND `auth`), include only caps with `Contains(installed, cap)`, join with `", "`; emit `GRANT SELECT ON <list> TO anon, authenticated;` **only if the list is non-empty**. Then `if Contains(installed, "auth")`: `GRANT SELECT, INSERT, UPDATE, DELETE ON notes TO authenticated;`. Then the two graphql grants + `ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO anon;`.
+  - Then for each cap in canonical order (api excluded) that is in `add`: `CREATE EXTENSION IF NOT EXISTS <ext>` if `generate.ExtensionMap[cap]` exists; schema fragment (+`\n`); seed (+`\n`) if `cfg.Seed()` and the `<cap>.seed.sql` fragment exists; if `apiEff`: `GRANT SELECT ON <ReadTableMap[cap]> TO anon, authenticated;` when the cap has a read table, and for `cap=="auth"` `GRANT SELECT, INSERT, UPDATE, DELETE ON notes TO authenticated;`; then `INSERT INTO p4a_meta.capabilities (cap) VALUES ('<cap>') ON CONFLICT (cap) DO NOTHING;`.
+  - Then if apiAdded: `INSERT INTO p4a_meta.capabilities (cap) VALUES ('api') ON CONFLICT (cap) DO NOTHING;`.
 - `EmitRemoveSQL`: api_removed = "api" in remove. For caps in REVERSE schemaOrder that are in `remove`: drop fragment; `DROP EXTENSION IF EXISTS <ext>` if owns one; `DELETE FROM p4a_meta.capabilities WHERE cap='<cap>';`. Then if api_removed: `ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE SELECT ON TABLES FROM anon;`, `DROP OWNED BY authenticator, anon, authenticated;`, `DROP ROLE IF EXISTS authenticator/authenticated/anon;`, `DROP EXTENSION IF EXISTS pg_graphql;`, `DELETE FROM p4a_meta.capabilities WHERE cap='api';`.
 
 - [ ] **Step 2: Golden tests** — `emit_test.go` with cases mirroring `test_update.sh`:
@@ -166,7 +171,9 @@ Implementation notes (mirror bash EXACTLY — these are the hardened invariants)
   - add api+search installed document_store,api: api NOT in add → per-cap grants `articles` after its create; golden asserts create-before-grant ordering (awk-style line check in the test).
   - api newly added (installed document_store): EmitPreSQL has idempotent role DO-blocks; EmitAddSQL has pg_graphql + grant on products (installed) + meta insert api.
   - remove search,api (allow-drop): EmitRemoveSQL has DROP TABLE articles CASCADE, DROP EXTENSION pg_trgm, REVOKE before DROP ROLE anon, single pg_graphql drop, reverse order (dashboards/event_daily before events if both).
-  Use golden files for full SQL bodies + targeted line-order assertions for create-before-grant and revoke-before-drop. `-update` flag to (re)generate goldens; inspect them; commit.
+  - remove document_store (no owned extension): EmitRemoveSQL has `DROP TABLE IF EXISTS products CASCADE` and ZERO `DROP EXTENSION` lines (document_store owns no extension).
+  - remove auth+api (allow-drop): `notes` dropped (auth, first in the reverse loop) BEFORE the api REVOKE / DROP OWNED / DROP ROLE block.
+  Use golden files for full SQL bodies + targeted line-order assertions for create-before-grant and revoke-before-drop. **Generate the goldens by capturing bash output** as the oracle for these delta-SQL cases (the delta SQL is unambiguously defined by `setup.sh --update --dry-run --installed '<csv>' <cfg> [--allow-drop]`): run bash for each scenario, save its PRE/REMOVE/ADD section bodies, and make the Go golden match (these have no header, so byte-fidelity IS the target here — unlike the Phase-1 init files). `-update` flag to (re)generate; inspect; commit.
 - [ ] **Step 3: Run** `go test ./internal/update/ -run TestEmit -update`, INSPECT goldens (paste add-api and remove-api), then `go test ./internal/update/` → PASS. `go vet ./...` clean.
 - [ ] **Step 4: Commit** `git add internal/update && git commit -m "feat(go): update delta SQL emission (pre/add/remove)"`
 
@@ -226,14 +233,13 @@ func (c Compose) WaitHealthy() error {
 // BuildUp: up -d --build --remove-orphans, with a DOCKER_BUILDKIT=0 legacy-build fallback for old buildx.
 func (c Compose) BuildUp() error {
 	cmd := exec.Command("docker", append(c.baseArgs(), "up", "-d", "--build", "--remove-orphans")...)
-	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	var stderr strings.Builder
-	cmd.Stderr = &stderr
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = io.MultiWriter(os.Stderr, &stderr) // stream live AND capture for buildx detection
 	if err := cmd.Run(); err == nil {
 		return nil
 	} else if !strings.Contains(strings.ToLower(stderr.String()), "buildx") {
-		fmt.Fprint(os.Stderr, stderr.String())
-		return err
+		return err // already streamed to os.Stderr
 	}
 	// fallback: legacy build then up --no-build
 	bld := exec.Command("docker", "build", "-t", generate.GeneratedImage, c.Dir)
@@ -253,13 +259,13 @@ func EnvValue(dir, key string) string {
 	}
 	for _, line := range strings.Split(string(b), "\n") {
 		if k, v, ok := strings.Cut(line, "="); ok && k == key {
-			return v
+			return strings.TrimRight(v, "\r") // defensively strip a stray CR (CRLF .env)
 		}
 	}
 	return ""
 }
 ```
-Add imports `strings`, `time`, and `github.com/Havoc24k/postgres4all/internal/generate` (for `GeneratedImage`). NOTE: `GeneratedImage` must be exported from `internal/generate` (export the const in Task 1 if not already). The `BuildUp` stderr handling: capture stderr to a buffer to detect the buildx string, but you lose live streaming on the primary attempt — acceptable; on fallback, stream. Verify the exec/Env wiring compiles.
+Add imports `io`, `strings`, `time`, and `github.com/Havoc24k/postgres4all/internal/generate` (for `GeneratedImage`, already exported at `generate.go:21` — just import it). Verify the exec/Env wiring compiles; the import graph is acyclic (generate imports only config+secrets).
 - [ ] **Step 2**: `go build ./... && go vet ./...` clean. (Docker behavior covered by Task 6 e2e.)
 - [ ] **Step 3: Commit** `git add internal/dockerx internal/generate && git commit -m "feat(go): dockerx live-update helpers (ApplySQL, QueryInstalled, BuildUp, WaitHealthy)"`
 
@@ -276,9 +282,21 @@ Add imports `strings`, `time`, and `github.com/Havoc24k/postgres4all/internal/ge
   4. Determine installed: if `--installed` given use it; else require docker (`dockerx.Preflight`), require the pgdata volume exists (`Compose.VolumeName`+`VolumeExists`, else error "no existing install — run install first"), `UpDB`+`WaitHealthy`, ensure `HasMetaTable`, `QueryInstalled`.
   5. `add, remove := update.Delta(c, splitCSV(installed))`. Print `Update plan:` ADD/REMOVE.
   6. If `len(remove)>0 && !allowDrop` → error listing remove caps. If both empty → "already up to date", return nil.
-  7. apiAdded := contains(add,"api"). If `--dry-run`: require `--installed` (else error); print `===== PRE =====` + EmitPreSQL(authPw) if apiAdded; `===== REMOVE =====` + EmitRemoveSQL if remove; `===== ADD =====` + EmitAddSQL if add; return nil.
-  8. Live: `UpDB`+`WaitHealthy`; if apiAdded → `ApplySQL(EmitPreSQL(authPw))`; if remove → `ApplySQL(EmitRemoveSQL)`; `BuildUp`+`WaitHealthy`; if add → `ApplySQL(EmitAddSQL)` and if apiAdded `RestartPostgrest()`. Print "update complete".
-  - `authPw` for EmitPreSQL = the AUTHENTICATOR_PASSWORD now in `build/.env` (read via `dockerx.EnvValue` AFTER Generate, since Generate wrote it). `user`/`db` for psql = `c.Postgres.User`/`c.Postgres.DB`.
+  7. `apiAdded := update.Contains(add, "api")`. If `--dry-run`: require `--installed` (else error "—dry-run requires --installed"). Then print the THREE section headers **UNCONDITIONALLY**, gating only the bodies (mirrors bash setup.sh:514-519):
+     ```go
+     fmt.Println("===== PRE =====")
+     if apiAdded { fmt.Print(update.EmitPreSQL(authPw)) }
+     fmt.Println("===== REMOVE =====")
+     if len(remove) > 0 { fmt.Print(update.EmitRemoveSQL(c, remove)) }
+     fmt.Println("===== ADD =====")
+     if len(add) > 0 { fmt.Print(update.EmitAddSQL(c, add, installedList)) }
+     return nil
+     ```
+  8. Live: `comp.UpDB()`+`WaitHealthy`; if apiAdded → `comp.ApplySQL(user, db, update.EmitPreSQL(authPw))`; if `len(remove)>0` → `comp.ApplySQL(user, db, update.EmitRemoveSQL(c, remove))`; `comp.BuildUp()`+`WaitHealthy`; if `len(add)>0` → `comp.ApplySQL(user, db, update.EmitAddSQL(c, add, installedList))` and if apiAdded `comp.RestartPostgrest()`. Then re-query and print the completion line (separate query — NOT QueryInstalled, which uses a different separator/order):
+     ```go
+     // print: update complete. installed: <SELECT string_agg(cap, ', ' ORDER BY cap) FROM p4a_meta.capabilities>
+     ```
+  - `authPw` = AUTHENTICATOR_PASSWORD from `build/.env` read via `dockerx.EnvValue(out, "AUTHENTICATOR_PASSWORD")` **AFTER** `Generate` (Generate wrote it). `user`/`db` = `c.Postgres.User`/`c.Postgres.DB`. `installedList` = the `[]string` parsed from the installed CSV.
 - [ ] **Step 2**: In `main.go`, replace `root.AddCommand(newStub("update", "Phase 2"))` with `root.AddCommand(newUpdateCmd())`.
 - [ ] **Step 3: Verify** `go build ./... && go vet ./...` clean. Dry-run parity vs bash:
 ```bash
