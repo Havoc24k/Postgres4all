@@ -22,3 +22,8 @@ define_sql() {
     | "${COMPOSE[@]}" exec -T db psql -v ON_ERROR_STOP=1 -U "$_DBU" -d "$_DBD" -qX >/dev/null
   sleep 1   # give PostgREST a moment to pick up the reload
 }
+
+# apply_sql_dir <dir>: apply every *.sql file in <dir> (sorted), then reload PostgREST.
+# Each example keeps its function pair as <name>.plpgsql.sql + <name>.plpython.sql; this loads
+# both. In a real project that SQL lives in functions/ and you'd run `./postgres4all apply-functions`.
+apply_sql_dir() { cat "$1"/*.sql | define_sql; }
