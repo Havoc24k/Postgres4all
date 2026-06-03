@@ -9,7 +9,7 @@ native REST call (`GET /products?attributes=cs.{...}`). Where it needs server-si
 KNN, GIS distance, a row-locking dequeue — the example ships a small `/rpc` function in **both**
 languages so you can compare them side by side.
 
-There are no scripts: the `postgres4all` CLI loads each example's functions, and you call the API with
+The `postgres4all` CLI loads each example's functions, and you call the API with
 `curl` (piped through `jq` for readable output).
 
 ## Layout

@@ -29,7 +29,7 @@ Build and start the stack (see [../README.md](../README.md) for full setup):
 
 ## Load the example's functions
 
-Apply this folder's GraphQL-wrapper functions with the CLI — the binary does it, no scripts — and it
+Apply this folder's GraphQL-wrapper functions with the CLI and it
 reloads PostgREST's schema cache (give it a second before calling):
 
 ```bash
@@ -92,9 +92,3 @@ curl -s -X POST "http://localhost:3000/rpc/graphql_plpgsql" \
 ```
 
 The PL/Python variant (`/rpc/graphql_plpython`) returns the identical result.
-
-## The two implementations
-
-[graphql.plpgsql.sql](graphql.plpgsql.sql) and [graphql.plpython.sql](graphql.plpython.sql) wrap the
-same `graphql.resolve()` call and return identically. In a real project these would live in
-`functions/` and `./postgres4all apply-functions` (no argument) would apply them from there.

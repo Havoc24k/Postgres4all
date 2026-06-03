@@ -169,9 +169,3 @@ curl -s "http://localhost:3000/jobs?select=id,status&order=id" | jq
   }
 ]
 ```
-
-## The two implementations
-
-[claim_job.plpgsql.sql](claim_job.plpgsql.sql) and [claim_job.plpython.sql](claim_job.plpython.sql)
-implement the same atomic dequeue and behave identically. In a real project these would live in
-`functions/` and `./postgres4all apply-functions` (no argument) would apply them from there.

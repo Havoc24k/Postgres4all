@@ -29,7 +29,7 @@ Build and start the stack (see [../README.md](../README.md) for full setup):
 
 ## Load the example's functions
 
-Apply this folder's `/rpc` functions with the CLI — the binary does it, no scripts — and it reloads
+Apply this folder's `/rpc` functions with the CLI and it reloads
 PostgREST's schema cache (give it a second before calling):
 
 ```bash
@@ -83,10 +83,3 @@ curl -s -X POST "http://localhost:3000/rpc/count_events_plpgsql" \
 ```
 
 The PL/Python variant (`/rpc/count_events_plpython`) returns the identical count.
-
-## The two implementations
-
-[count_events.plpgsql.sql](count_events.plpgsql.sql) and
-[count_events.plpython.sql](count_events.plpython.sql) run the same windowed `count(*)` and return
-identically. In a real project these would live in `functions/` and `./postgres4all apply-functions`
-(no argument) would apply them from there.

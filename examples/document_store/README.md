@@ -29,8 +29,7 @@ Build and start the stack (see [../README.md](../README.md) for full setup):
 
 ## Load the example's functions
 
-The `/rpc` functions ship as SQL in this folder. Apply them with the CLI — the binary does it, no
-scripts — and it reloads PostgREST's schema cache (give it a second to take effect before calling):
+The `/rpc` functions ship as SQL in this folder. Apply them with the CLI and it reloads PostgREST's schema cache (give it a second to take effect before calling):
 
 ```bash
 ./postgres4all apply-functions examples/document_store
@@ -93,11 +92,3 @@ curl -s -X POST "http://localhost:3000/rpc/products_matching_plpgsql" \
 ```
 
 The PL/Python variant (`/rpc/products_matching_plpython`) returns the identical result.
-
-## The two implementations
-
-[products_matching.plpgsql.sql](products_matching.plpgsql.sql) and
-[products_matching.plpython.sql](products_matching.plpython.sql) run the same `@>` containment query
-and return identically — the language is just an implementation detail behind the API. In a real
-project these would live in `functions/` and `./postgres4all apply-functions` (no argument) would
-apply them from there.

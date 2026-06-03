@@ -30,7 +30,7 @@ Build and start the stack (see [../README.md](../README.md) for full setup):
 
 ## Load the example's functions
 
-Apply this folder's `/rpc` functions with the CLI — the binary does it, no scripts — and it reloads
+Apply this folder's `/rpc` functions with the CLI and it reloads
 PostgREST's schema cache (give it a second before calling):
 
 ```bash
@@ -66,10 +66,3 @@ curl -s -X POST "http://localhost:3000/rpc/nearby_places_plpgsql" \
 ```
 
 The PL/Python variant (`/rpc/nearby_places_plpython`) returns the identical result.
-
-## The two implementations
-
-[nearby_places.plpgsql.sql](nearby_places.plpgsql.sql) and
-[nearby_places.plpython.sql](nearby_places.plpython.sql) run the same distance-ranked query and
-return identically. In a real project these would live in `functions/` and `./postgres4all
-apply-functions` (no argument) would apply them from there.

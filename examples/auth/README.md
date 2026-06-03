@@ -33,7 +33,7 @@ need `openssl` on your PATH and a built stack.
 
 ## Load the example's functions
 
-Apply this folder's `/rpc` functions with the CLI — the binary does it, no scripts — and it reloads
+Apply this folder's `/rpc` functions with the CLI and it reloads
 PostgREST's schema cache (give it a second before calling):
 
 ```bash
@@ -107,10 +107,3 @@ bob:
 
 The PL/Python variant (`/rpc/my_notes_plpython`) enforces the same isolation — it comes from the
 database's RLS policy, not the function language.
-
-## The two implementations
-
-[my_notes.plpgsql.sql](my_notes.plpgsql.sql) and [my_notes.plpython.sql](my_notes.plpython.sql) both
-lean on RLS for per-user isolation rather than coding it themselves, and return identically. In a real
-project these would live in `functions/` and `./postgres4all apply-functions` (no argument) would
-apply them from there.

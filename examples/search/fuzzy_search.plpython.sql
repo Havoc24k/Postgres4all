@@ -4,5 +4,5 @@ RETURNS TABLE(title text, score real) LANGUAGE plpython3u AS $fn$
 plan = plpy.prepare(
     "SELECT title, round(word_similarity($1, title)::numeric, 3)::real AS score "
     "FROM articles WHERE $1 <% title ORDER BY score DESC", ["text"])
-return plpy.execute(plan, [q])
+return list(plpy.execute(plan, [q]))
 $fn$;

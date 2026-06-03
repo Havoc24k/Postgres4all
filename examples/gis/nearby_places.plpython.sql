@@ -5,5 +5,5 @@ plan = plpy.prepare(
     "SELECT name, round(ST_DistanceSphere(geom, ST_SetSRID(ST_MakePoint($1,$2),4326))::numeric,1)::real AS metres "
     "FROM places ORDER BY geom <-> ST_SetSRID(ST_MakePoint($1,$2),4326) LIMIT $3",
     ["float8", "float8", "int"])
-return plpy.execute(plan, [lon, lat, k])
+return list(plpy.execute(plan, [lon, lat, k]))
 $fn$;

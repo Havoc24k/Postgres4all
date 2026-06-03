@@ -5,5 +5,5 @@ plan = plpy.prepare(
     "SELECT content, round((embedding <=> $1::vector)::numeric, 4)::real AS distance "
     "FROM documents WHERE $3 IS NULL OR owner_id = $3 "
     "ORDER BY embedding <=> $1::vector LIMIT $2", ["text", "int", "bigint"])
-return plpy.execute(plan, [query, k, owner])
+return list(plpy.execute(plan, [query, k, owner]))
 $fn$;

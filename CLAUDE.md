@@ -98,5 +98,5 @@ Version constants live in `internal/generate/generate.go` (`PGMajor`, `PostGISVe
 - Grants (built by `writeAPIGrants` in `internal/generate/generate.go`, assembled into `build/init/03-api-grants.sql`) are deliberately permissive for a demo (anon reads everything). Tighten before any real use.
 - The original bash `setup.sh` has been retired; the Go binary is the sole implementation. API-first demos
   live under `examples/` — one self-contained folder per capability (a `README.md` runbook + the `/rpc`
-  function pair as `<name>.plpgsql.sql` + `<name>.plpython.sql`), with **no shell scripts**: the CLI loads
+  function pair as `<name>.plpgsql.sql` + `<name>.plpython.sql`). The CLI loads
   each via `./postgres4all apply-functions examples/<cap>` and the README's `curl … | jq` calls hit the API.

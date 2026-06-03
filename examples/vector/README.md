@@ -30,7 +30,7 @@ Build and start the stack (see [../README.md](../README.md) for full setup):
 
 ## Load the example's functions
 
-Apply this folder's `/rpc` functions with the CLI — the binary does it, no scripts — and it reloads
+Apply this folder's `/rpc` functions with the CLI and it reloads
 PostgREST's schema cache (give it a second before calling):
 
 ```bash
@@ -66,10 +66,3 @@ curl -s -X POST "http://localhost:3000/rpc/match_documents_plpgsql" \
 ```
 
 The PL/Python variant (`/rpc/match_documents_plpython`) returns the identical result.
-
-## The two implementations
-
-[match_documents.plpgsql.sql](match_documents.plpgsql.sql) and
-[match_documents.plpython.sql](match_documents.plpython.sql) run the same KNN-plus-filter query and
-return identically. In a real project these would live in `functions/` and `./postgres4all
-apply-functions` (no argument) would apply them from there.
