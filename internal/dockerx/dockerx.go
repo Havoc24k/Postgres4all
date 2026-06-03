@@ -13,10 +13,30 @@ import (
 )
 
 // Compose wraps `docker compose` for a generated build/ directory.
-type Compose struct{ Dir string } // Dir holds build/ (contains .env + docker-compose.yml)
+type Compose struct {
+	Dir              string // build/ (contains .env + docker-compose.yml)
+	DBService        string // db service name (empty -> "db")
+	PostgRESTService string // postgrest service name (empty -> "postgrest")
+}
 
 func (c Compose) baseArgs() []string {
 	return []string{"compose", "--env-file", c.Dir + "/.env", "-f", c.Dir + "/docker-compose.yml"}
+}
+
+// db returns the db service name, defaulting to "db".
+func (c Compose) db() string {
+	if c.DBService != "" {
+		return c.DBService
+	}
+	return "db"
+}
+
+// pgrst returns the postgrest service name, defaulting to "postgrest".
+func (c Compose) pgrst() string {
+	if c.PostgRESTService != "" {
+		return c.PostgRESTService
+	}
+	return "postgrest"
 }
 
 // Run invokes `docker compose <baseArgs> <args...>` with streamed stdio.
@@ -65,7 +85,7 @@ func Preflight() error {
 
 // ApplySQL pipes sql to `compose exec -T db psql -v ON_ERROR_STOP=1 --single-transaction -U user -d db`.
 func (c Compose) ApplySQL(user, db, sql string) error {
-	cmd := exec.Command("docker", append(c.baseArgs(), "exec", "-T", "db",
+	cmd := exec.Command("docker", append(c.baseArgs(), "exec", "-T", c.db(),
 		"psql", "-v", "ON_ERROR_STOP=1", "--single-transaction", "-U", user, "-d", db)...)
 	cmd.Stdin = strings.NewReader(sql)
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
@@ -74,7 +94,7 @@ func (c Compose) ApplySQL(user, db, sql string) error {
 
 // QueryInstalled reads the comma-joined installed capability set from p4a_meta.capabilities.
 func (c Compose) QueryInstalled(user, db string) (string, error) {
-	out, err := exec.Command("docker", append(c.baseArgs(), "exec", "-T", "db",
+	out, err := exec.Command("docker", append(c.baseArgs(), "exec", "-T", c.db(),
 		"psql", "-tAqc", "SELECT string_agg(cap, ',') FROM p4a_meta.capabilities", "-U", user, "-d", db)...).Output()
 	if err != nil {
 		return "", err
@@ -84,21 +104,21 @@ func (c Compose) QueryInstalled(user, db string) (string, error) {
 
 // HasMetaTable reports whether p4a_meta.capabilities exists.
 func (c Compose) HasMetaTable(user, db string) bool {
-	out, _ := exec.Command("docker", append(c.baseArgs(), "exec", "-T", "db",
+	out, _ := exec.Command("docker", append(c.baseArgs(), "exec", "-T", c.db(),
 		"psql", "-tAqc", "SELECT to_regclass('p4a_meta.capabilities')", "-U", user, "-d", db)...).Output()
 	return strings.TrimSpace(string(out)) == "p4a_meta.capabilities"
 }
 
 // UpDB starts only the db service (no postgrest, whose role may not exist yet), clearing orphans.
-func (c Compose) UpDB() error { return c.Run("up", "-d", "--remove-orphans", "db") }
+func (c Compose) UpDB() error { return c.Run("up", "-d", "--remove-orphans", c.db()) }
 
 // RestartPostgrest restarts the postgrest service (best-effort; no-op if absent).
-func (c Compose) RestartPostgrest() { _ = c.Run("restart", "postgrest") }
+func (c Compose) RestartPostgrest() { _ = c.Run("restart", c.pgrst()) }
 
 // WaitHealthy polls the db container health for up to ~60s.
 func (c Compose) WaitHealthy() error {
 	for i := 0; i < 30; i++ {
-		cid, _ := exec.Command("docker", append(c.baseArgs(), "ps", "-q", "db")...).Output()
+		cid, _ := exec.Command("docker", append(c.baseArgs(), "ps", "-q", c.db())...).Output()
 		id := strings.TrimSpace(string(cid))
 		if id != "" {
 			h, _ := exec.Command("docker", "inspect", "-f", "{{.State.Health.Status}}", id).Output()

@@ -25,5 +25,12 @@
   "api": {
     "authenticator_password": "",
     "jwt_secret": ""
+  },
+  "compose": {
+    "project": "",
+    "services": {
+      "db": "",
+      "postgrest": ""
+    }
   }
 }

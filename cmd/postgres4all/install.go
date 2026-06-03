@@ -28,7 +28,7 @@ func newInstallCmd() *cobra.Command {
 			if err := dockerx.Preflight(); err != nil {
 				return err
 			}
-			comp := dockerx.Compose{Dir: out}
+			comp := dockerx.Compose{Dir: out, DBService: c.DBService(), PostgRESTService: c.PostgRESTService()}
 			if vol, _ := comp.VolumeName(); dockerx.VolumeExists(vol) {
 				return fmt.Errorf("an install already exists (volume %s); use 'postgres4all update' (Phase 2) or 'docker compose -f %s/docker-compose.yml down -v' to start over", vol, out)
 			}

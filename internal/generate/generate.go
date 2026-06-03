@@ -130,13 +130,13 @@ func Generate(c *config.Config, outDir string) error {
 // renderDockerfile renders Dockerfile.tmpl into outDir/Dockerfile.
 func renderDockerfile(c *config.Config, outDir string) error {
 	type dockerfileModel struct {
-		GIS           bool
-		Vector        bool
-		API           bool
-		PGMajor       string
+		GIS            bool
+		Vector         bool
+		API            bool
+		PGMajor        string
 		PostGISVersion string
-		PgGraphQL     string
-		LangPkgs      []string
+		PgGraphQL      string
+		LangPkgs       []string
 	}
 
 	var langPkgs []string
@@ -320,21 +320,25 @@ func writeEnv(c *config.Config, outDir string) error {
 	}
 
 	type envModel struct {
-		User     string
-		Password string
-		DB       string
-		API      bool
-		AuthPw   string
-		JWT      string
+		User             string
+		Password         string
+		DB               string
+		API              bool
+		AuthPw           string
+		JWT              string
+		DBService        string
+		PostgRESTService string
 	}
 
 	m := envModel{
-		User:     c.Postgres.User,
-		Password: pgPass,
-		DB:       c.Postgres.DB,
-		API:      c.Enabled("api"),
-		AuthPw:   authPw,
-		JWT:      jwt,
+		User:             c.Postgres.User,
+		Password:         pgPass,
+		DB:               c.Postgres.DB,
+		API:              c.Enabled("api"),
+		AuthPw:           authPw,
+		JWT:              jwt,
+		DBService:        c.Compose.Services["db"],        // empty unless overridden
+		PostgRESTService: c.Compose.Services["postgrest"], // empty unless overridden
 	}
 
 	tmpl, err := template.ParseFS(templatesFS, "templates/env.tmpl")
@@ -362,17 +366,23 @@ func writeCompose(c *config.Config, outDir string) error {
 	}
 
 	type composeModel struct {
-		Image          string
-		PostgRESTImage string
-		Bind           string
-		API            bool
+		Image            string
+		PostgRESTImage   string
+		Bind             string
+		API              bool
+		Name             string
+		DBService        string
+		PostgRESTService string
 	}
 
 	m := composeModel{
-		Image:          GeneratedImage,
-		PostgRESTImage: PostgRESTImage,
-		Bind:           bind,
-		API:            c.Enabled("api"),
+		Image:            GeneratedImage,
+		PostgRESTImage:   PostgRESTImage,
+		Bind:             bind,
+		API:              c.Enabled("api"),
+		Name:             c.ProjectName(),
+		DBService:        c.DBService(),
+		PostgRESTService: c.PostgRESTService(),
 	}
 
 	tmpl, err := template.ParseFS(templatesFS, "templates/docker-compose.yml.tmpl")

@@ -70,7 +70,7 @@ func newUpdateCmd() *cobra.Command {
 				return fmt.Errorf("--dry-run requires --installed")
 			}
 
-			comp := dockerx.Compose{Dir: out}
+			comp := dockerx.Compose{Dir: out, DBService: c.DBService(), PostgRESTService: c.PostgRESTService()}
 			var installedList []string
 			if cmd.Flags().Changed("installed") {
 				installedList = splitCSV(installed)

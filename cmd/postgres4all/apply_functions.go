@@ -40,7 +40,7 @@ func newApplyFunctionsCmd() *cobra.Command {
 			if user == "" || db == "" {
 				return fmt.Errorf("%s/.env not found or missing POSTGRES_USER/POSTGRES_DB — run install first", out)
 			}
-			comp := dockerx.Compose{Dir: out}
+			comp := dockerx.Compose{Dir: out, DBService: dockerx.EnvValue(out, "P4A_DB_SERVICE"), PostgRESTService: dockerx.EnvValue(out, "P4A_POSTGREST_SERVICE")}
 			if vol, _ := comp.VolumeName(); !dockerx.VolumeExists(vol) {
 				return fmt.Errorf("no existing install found (no pgdata volume); run 'postgres4all install' first")
 			}

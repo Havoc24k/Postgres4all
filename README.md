@@ -135,6 +135,13 @@ Runnable, seeded versions live in [`examples/`](examples/) — one per capabilit
     "plperl": false,
     "plpython": false,
     "allow_untrusted": false
+  },
+  "compose": {
+    "project": "myapp",
+    "services": {
+      "db": "postgres",
+      "postgrest": "rest"
+    }
   }
 }
 ```
@@ -144,6 +151,9 @@ Runnable, seeded versions live in [`examples/`](examples/) — one per capabilit
   there to mint tokens.
 - **Networking:** 5432/3000 bind to `127.0.0.1` only — set `"publish_externally": true` in `postgres`
   to bind all interfaces.
+- **Names** (`compose`, all optional): `project` sets the docker compose stack name (default: the
+  build dir), and `services` renames the `db` / `postgrest` services. Set `project` before the first
+  `install` — changing it later points at a different (empty) data volume.
 - `build/` is generated and git-ignored — never hand-edit it.
 
 ---

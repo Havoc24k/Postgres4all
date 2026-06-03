@@ -5,8 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 )
+
+// composeNameRe constrains compose project/service names to a safe, lowercase-only subset.
+var composeNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
 
 // Order is the canonical capability order used across generation.
 var Order = []string{"document_store", "job_queue", "search", "vector", "gis", "timeseries", "dashboards", "api", "auth"}
@@ -17,6 +21,15 @@ type Config struct {
 	Capabilities map[string]bool `json:"capabilities"`
 	API          APICfg          `json:"api"`
 	Languages    LanguagesCfg    `json:"languages"`
+	Compose      ComposeCfg      `json:"compose"`
+}
+
+// ComposeCfg names the generated docker compose stack and its services. All optional:
+// an empty Project leaves the project name to docker compose (the build dir); a service
+// not listed in Services keeps its canonical name (db, postgrest).
+type ComposeCfg struct {
+	Project  string            `json:"project"`
+	Services map[string]string `json:"services"` // keyed by canonical name: "db", "postgrest"
 }
 type PostgresCfg struct {
 	User              string `json:"user"`
@@ -63,6 +76,25 @@ func (c *Config) Seed() bool { return c.SeedDemoData == nil || *c.SeedDemoData }
 
 func (c *Config) Enabled(cap string) bool { return c.Capabilities[cap] }
 
+// ProjectName is the docker compose project name (empty = let compose default to the build dir).
+func (c *Config) ProjectName() string { return c.Compose.Project }
+
+// DBService is the configured db service name, or "db".
+func (c *Config) DBService() string {
+	if v := c.Compose.Services["db"]; v != "" {
+		return v
+	}
+	return "db"
+}
+
+// PostgRESTService is the configured postgrest service name, or "postgrest".
+func (c *Config) PostgRESTService() string {
+	if v := c.Compose.Services["postgrest"]; v != "" {
+		return v
+	}
+	return "postgrest"
+}
+
 // Validate aggregates all problems into one error.
 func (c *Config) Validate() error {
 	var problems []string
@@ -92,6 +124,23 @@ func (c *Config) Validate() error {
 	}
 	if c.Languages.PLPython && !c.Languages.AllowUntrusted {
 		problems = append(problems, "language 'plpython' is UNTRUSTED (plpython3u runs with the database OS user's full privileges); set languages.allow_untrusted=true to enable it deliberately")
+	}
+	// compose naming
+	badName := func(n string) bool { return n != "" && !composeNameRe.MatchString(n) }
+	if badName(c.Compose.Project) {
+		problems = append(problems, fmt.Sprintf("invalid compose name %q (use lowercase letters, digits, '-' or '_', starting with a letter or digit)", c.Compose.Project))
+	}
+	knownSvc := map[string]bool{"db": true, "postgrest": true}
+	for k, v := range c.Compose.Services {
+		if !knownSvc[k] {
+			problems = append(problems, fmt.Sprintf("unknown service %q in compose.services (known: db, postgrest)", k))
+		}
+		if badName(v) {
+			problems = append(problems, fmt.Sprintf("invalid compose name %q for service %q (use lowercase letters, digits, '-' or '_', starting with a letter or digit)", v, k))
+		}
+	}
+	if c.DBService() == c.PostgRESTService() {
+		problems = append(problems, fmt.Sprintf("compose db and postgrest service names must differ (both %q)", c.DBService()))
 	}
 	if len(problems) > 0 {
 		return errors.New("invalid config:\n  - " + strings.Join(problems, "\n  - "))

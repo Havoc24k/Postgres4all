@@ -42,7 +42,9 @@ capabilities without losing data; a `down -v` + `install` only to start over.
 
 ### Package map (`internal/`)
 - **`config`** — typed `Config`, `Load`, `Validate` (aggregates all problems: ≥1 capability, `auth`→`api`,
-  `dashboards`→`timeseries`, `plpython` gating). `config.Order` is the canonical capability order.
+  `dashboards`→`timeseries`, `plpython` gating, compose-name syntax/collision). `config.Order` is the
+  canonical capability order. `compose.project` + `compose.services{db,postgrest}` name the stack/services,
+  read via `ProjectName()`/`DBService()`/`PostgRESTService()` (empty → defaults `db`/`postgrest`).
 - **`secrets`** — `Hex(n)` via `crypto/rand` (`POSTGRES_PASSWORD`=Hex(24), `AUTHENTICATOR_PASSWORD`=Hex(16),
   `JWT_SECRET`=Hex(48) on the random path).
 - **`generate`** — `Generate(cfg, outDir)` writes `build/` via embedded `text/template` files
@@ -64,8 +66,10 @@ capabilities without losing data; a `down -v` + `install` only to start over.
   arg points it at any folder, e.g. `examples/vector`) in one transaction to a running install and reloads PostgREST.
   A function doing privileged writes for unprivileged callers must be `SECURITY DEFINER` (see
   `functions/example_submit.sql`).
-- **`dockerx`** — `os/exec` wrappers: `Compose{Dir}` with `Run`/`ApplySQL`/`QueryInstalled`/`VolumeName`/
-  `WaitHealthy`/`BuildUp`/`UpDB`, and `Preflight`/`VolumeExists`/`EnvValue`.
+- **`dockerx`** — `os/exec` wrappers: `Compose{Dir, DBService, PostgRESTService}` (service names empty →
+  `db`/`postgrest`) with `Run`/`ApplySQL`/`QueryInstalled`/`VolumeName`/`WaitHealthy`/`BuildUp`/`UpDB`, and
+  `Preflight`/`VolumeExists`/`EnvValue`. The generated stack records its service names in `build/.env`
+  (`P4A_DB_SERVICE`/`P4A_POSTGREST_SERVICE`); `apply-functions` reads them since it doesn't load config.
 
 `p4a_meta.capabilities` (a dedicated schema, never exposed by PostgREST) records the installed set;
 `update` reads it to compute the delta. Per-capability teardown is `capabilities/<cap>.drop.sql`.

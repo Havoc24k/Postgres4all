@@ -149,3 +149,53 @@ func TestEnvSecretSizes(t *testing.T) {
 		t.Fatalf("missing env keys: %v", want)
 	}
 }
+
+func TestComposeNamingCustom(t *testing.T) {
+	c := cfg([]string{"document_store", "api", "auth"}, func(c *config.Config) {
+		withAPI(c)
+		c.Compose = config.ComposeCfg{
+			Project:  "myapp",
+			Services: map[string]string{"db": "postgres", "postgrest": "rest"},
+		}
+	})
+	out := t.TempDir()
+	if err := Generate(c, out); err != nil {
+		t.Fatal(err)
+	}
+	compose, _ := os.ReadFile(filepath.Join(out, "docker-compose.yml"))
+	cs := string(compose)
+	for _, want := range []string{"name: myapp\n", "\n  postgres:\n", "\n  rest:\n", "@postgres:5432", "depends_on:\n      postgres:"} {
+		if !strings.Contains(cs, want) {
+			t.Errorf("compose missing %q\n---\n%s", want, cs)
+		}
+	}
+	if strings.Contains(cs, "\n  db:\n") {
+		t.Errorf("compose should not contain default 'db' service:\n%s", cs)
+	}
+	env, _ := os.ReadFile(filepath.Join(out, ".env"))
+	for _, want := range []string{"P4A_DB_SERVICE=postgres", "P4A_POSTGREST_SERVICE=rest"} {
+		if !strings.Contains(string(env), want) {
+			t.Errorf(".env missing %q\n---\n%s", want, string(env))
+		}
+	}
+}
+
+func TestComposeNamingDefaultsUnchanged(t *testing.T) {
+	c := cfg([]string{"document_store", "api", "auth"}, withAPI)
+	out := t.TempDir()
+	if err := Generate(c, out); err != nil {
+		t.Fatal(err)
+	}
+	compose, _ := os.ReadFile(filepath.Join(out, "docker-compose.yml"))
+	cs := string(compose)
+	if strings.Contains(cs, "name:") {
+		t.Errorf("default compose must not emit a name: line\n%s", cs)
+	}
+	if !strings.Contains(cs, "\n  db:\n") || !strings.Contains(cs, "\n  postgrest:\n") {
+		t.Errorf("default services missing:\n%s", cs)
+	}
+	env, _ := os.ReadFile(filepath.Join(out, ".env"))
+	if strings.Contains(string(env), "P4A_DB_SERVICE") {
+		t.Errorf("default .env must not contain P4A_DB_SERVICE:\n%s", string(env))
+	}
+}

@@ -10,3 +10,4 @@ config.json
 *.db
 .beads-credential-key
 .beads/
+dist/

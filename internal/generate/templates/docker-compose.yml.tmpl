@@ -1,5 +1,6 @@
-services:
-  db:
+{{if .Name}}name: {{.Name}}
+{{end}}services:
+  {{.DBService}}:
     build: .
     image: {{.Image}}
     restart: unless-stopped
@@ -20,18 +21,18 @@ services:
       timeout: 5s
       retries: 12
 {{- if .API}}
-  postgrest:
+  {{.PostgRESTService}}:
     image: {{.PostgRESTImage}}
     restart: unless-stopped
     environment:
-      PGRST_DB_URI: postgres://authenticator:${AUTHENTICATOR_PASSWORD}@db:5432/${POSTGRES_DB}
+      PGRST_DB_URI: postgres://authenticator:${AUTHENTICATOR_PASSWORD}@{{.DBService}}:5432/${POSTGRES_DB}
       PGRST_DB_SCHEMAS: public
       PGRST_DB_ANON_ROLE: anon
       PGRST_JWT_SECRET: ${JWT_SECRET}
     ports:
       - "{{.Bind}}3000:3000"
     depends_on:
-      db:
+      {{.DBService}}:
         condition: service_healthy
 {{- end}}
 volumes:
