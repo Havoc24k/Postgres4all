@@ -1,4 +1,4 @@
-# 🔐 Auth (replaces hand-written auth)
+# 🔐 Auth
 
 Postgres itself enforces per-user access over the HTTP API: PostgREST reads a signed JWT, switches to
 the matching role, and row-level security scopes every query to the caller's `sub` claim. The result

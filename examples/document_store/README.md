@@ -1,4 +1,4 @@
-# 📄 Document store (replaces MongoDB)
+# 📄 Document store
 
 Store schemaless documents as `JSONB` and query them by containment over the HTTP API — the `@>`
 operator asks "does this document contain this fragment?", giving MongoDB-style filtering on

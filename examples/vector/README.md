@@ -1,4 +1,4 @@
-# 🧠 Vector search (replaces Pinecone)
+# 🧠 Vector search
 
 Store embeddings in a `vector` column and rank by similarity over the HTTP API. This example does the
 headline trick — semantic K-nearest-neighbours **and** a relational `WHERE` in one query — behind an

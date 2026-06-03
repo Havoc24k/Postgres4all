@@ -1,4 +1,4 @@
-# 🔌 API (replaces hand-written Node/Python middleware)
+# 🔌 API
 
 Postgres serves its own HTTP API: PostgREST turns every table into a REST endpoint, and a one-line
 wrapper function exposes `pg_graphql` over `/rpc` — so a GraphQL query and a REST read both resolve

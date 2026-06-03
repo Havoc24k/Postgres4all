@@ -1,4 +1,4 @@
-# 📊 Dashboards (replaces Snowflake / a warehouse)
+# 📊 Dashboards
 
 Pre-aggregate raw events into a materialized rollup once, then serve the small, dashboard-ready
 result over HTTP — no per-request scan of the raw table, and no separate warehouse to feed. The

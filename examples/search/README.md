@@ -1,4 +1,4 @@
-# 🔍 Search (replaces Elasticsearch)
+# 🔍 Search
 
 Postgres does full-text and typo-tolerant search natively — `tsvector` / `websearch_to_tsquery` for
 ranked full-text, and `pg_trgm` similarity for fuzzy matching. Full-text comes straight from

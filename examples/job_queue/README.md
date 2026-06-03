@@ -1,4 +1,4 @@
-# 📬 Job queue (replaces Redis/RabbitMQ)
+# 📬 Job queue
 
 A durable work queue backed by a single Postgres table, with workers dequeuing over the HTTP API.
 Each claim is an atomic, contention-free dequeue — `FOR UPDATE SKIP LOCKED` hands every concurrent

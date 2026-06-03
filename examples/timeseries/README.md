@@ -1,4 +1,4 @@
-# 📈 Time series (replaces a time-series DB)
+# 📈 Time series
 
 Postgres stores append-only event data and serves time-windowed reads over HTTP. A BRIN index on
 `occurred_at` keeps range scans tiny without a dedicated time-series engine, and the whole `events`

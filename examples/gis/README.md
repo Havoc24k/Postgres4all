@@ -1,4 +1,4 @@
-# 🗺️ Maps (replaces a PostGIS GIS stack)
+# 🗺️ Maps
 
 Postgres with PostGIS does geospatial search natively: store points as geometry, index them with
 GiST, and answer "what's nearest to me?" over the HTTP API. This example exposes a nearest-neighbour
