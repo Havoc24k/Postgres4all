@@ -28,13 +28,29 @@ Build and start the stack (see [../README.md](../README.md) for full setup):
 ./postgres4all install
 ```
 
-This example also mints HS256 JWTs with `openssl` and reads `JWT_SECRET` from `build/.env`, so you
-need `openssl` on your PATH and a built stack.
+You also need `openssl` and `jq` on your PATH (to sign tokens and pretty-print responses).
+
+### Where the JWT secret comes from
+
+Auth hinges on a secret that signs and verifies tokens. The `api` block of `config.json` holds it:
+
+```jsonc
+"api": {
+  "authenticator_password": "",
+  "jwt_secret": ""
+}
+```
+
+Left **empty** (the default), `install` **auto-generates** both into `build/.env` (mode `0600`):
+`JWT_SECRET` is what PostgREST verifies every token against, and `AUTHENTICATOR_PASSWORD` is the
+password PostgREST logs in with. This example reads the generated `JWT_SECRET` from `build/.env` to
+sign Alice's and Bob's tokens — so it works without you choosing a secret. Set either value in
+`config.json` to pin a known one instead (e.g. to mint tokens elsewhere).
 
 ## Load the example's functions
 
-Apply this folder's `/rpc` functions with the CLI and it reloads
-PostgREST's schema cache (give it a second before calling):
+Apply this folder's `/rpc` functions with the CLI (it reloads PostgREST's schema cache; give it a
+second before calling):
 
 ```bash
 ./postgres4all apply-functions examples/auth
@@ -44,26 +60,35 @@ That loads [my_notes.plpgsql.sql](my_notes.plpgsql.sql) and [my_notes.plpython.s
 
 ## Call the API
 
-Run the steps below from the repo root in **one shell session** (the token variables must persist).
+Run the steps below **from the repo root, in one shell session** (the token variables must persist).
 JSON responses are piped through `jq`.
 
-**Mint two user tokens** — RLS keys each note's `owner` to the JWT `sub` claim, so you need two signed
-tokens:
+### 1. Sign a token for each user
+
+A request authenticates with a **JWT**: three base64url parts — `header.payload.signature` — where the
+signature is `HMAC-SHA256(header.payload, JWT_SECRET)`. The payload's `role` becomes the Postgres role
+PostgREST switches to, and its `sub` is the identity RLS keys each note's `owner` to. Read the
+auto-generated secret from `build/.env` and sign one token per user:
 
 ```bash
-SECRET=$(grep '^JWT_SECRET=' build/.env | cut -d= -f2-)
-b64() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
-mk_jwt() {  # mk_jwt <sub>
+SECRET=$(grep '^JWT_SECRET=' build/.env | cut -d= -f2-)   # the secret install generated
+
+b64() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }   # base64url, no padding
+mk_jwt() {                                                # mk_jwt <username> -> signed token
   local hdr pay
   hdr=$(printf '{"alg":"HS256","typ":"JWT"}' | b64)
   pay=$(printf '{"role":"authenticated","sub":"%s"}' "$1" | b64)
   printf '%s.%s.%s' "$hdr" "$pay" \
     "$(printf '%s.%s' "$hdr" "$pay" | openssl dgst -binary -sha256 -hmac "$SECRET" | b64)"
 }
-ALICE=$(mk_jwt alice); BOB=$(mk_jwt bob)
+
+ALICE=$(mk_jwt alice)
+BOB=$(mk_jwt bob)
 ```
 
-**No token, no access** — `anon` was never granted the `notes` table:
+### 2. No token → no access
+
+`anon` (the no-token role) was never granted the `notes` table, so an unauthenticated read is rejected:
 
 ```bash
 curl -s -o /dev/null -w 'GET /notes (anon) -> HTTP %{http_code}\n' "http://localhost:3000/notes"
@@ -73,16 +98,20 @@ curl -s -o /dev/null -w 'GET /notes (anon) -> HTTP %{http_code}\n' "http://local
 GET /notes (anon) -> HTTP 401
 ```
 
-**Alice creates a note** — the `owner` is filled from her JWT `sub`; PostgREST returns `201 Created`
-with an empty body:
+### 3. Alice creates a note
+
+She sends her token; the `owner` column is filled from her JWT `sub` automatically. PostgREST returns
+`201 Created` with an empty body:
 
 ```bash
 curl -s -X POST "http://localhost:3000/notes" -H "Authorization: Bearer $ALICE" \
   -H 'Content-Type: application/json' -d '{"body":"alice private note"}'
 ```
 
-**RLS isolation via `/rpc` — PL/pgSQL** — the function does a bare `SELECT * FROM notes`, but RLS
-(running as the calling role) scopes the rows to each caller's `sub`:
+### 4. Each user sees only their own rows
+
+The `/rpc` function runs a bare `SELECT * FROM notes`, but RLS — running as the calling role — scopes
+the rows to each caller's `sub`. Alice sees her note; Bob sees nothing:
 
 ```bash
 echo "alice:"; curl -s -X POST "http://localhost:3000/rpc/my_notes_plpgsql" -H "Authorization: Bearer $ALICE" | jq
