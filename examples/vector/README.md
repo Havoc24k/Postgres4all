@@ -1,6 +1,9 @@
 # 🧠 Vector search (replaces Pinecone)
 
-Store embeddings alongside your relational rows and rank them by similarity with pgvector's distance operators — then expose that ranking as a single HTTP endpoint, so a client can do approximate-nearest-neighbour search over the API without a separate vector database.
+Store embeddings in a `vector` column and rank by similarity over the HTTP API. This example does the
+headline trick — semantic K-nearest-neighbours **and** a relational `WHERE` in one query — behind an
+`/rpc` function, because the `ORDER BY embedding <=> $query` expression can't be written in
+PostgREST's URL grammar.
 
 ## Prerequisites
 
@@ -8,53 +11,65 @@ Enable this in `config.json` (PL/Python powers the second implementation):
 
 ```jsonc
 {
-  "capabilities": { "vector": true, "api": true },
-  "languages": { "plpython": true, "allow_untrusted": true }
+  "capabilities": {
+    "vector": true,
+    "api": true
+  },
+  "languages": {
+    "plpython": true,
+    "allow_untrusted": true
+  }
 }
 ```
 
-Then build and start the stack (see [../README.md](../README.md) for full setup):
+Build and start the stack (see [../README.md](../README.md) for full setup):
 
 ```bash
 ./postgres4all install
 ```
 
-## Run it
+## Load the example's functions
+
+Apply this folder's `/rpc` functions with the CLI — the binary does it, no scripts — and it reloads
+PostgREST's schema cache (give it a second before calling):
 
 ```bash
-bash examples/vector/run.sh
+./postgres4all apply-functions examples/vector
 ```
 
-Or follow the steps below by hand against `http://localhost:3000`.
+That loads [match_documents.plpgsql.sql](match_documents.plpgsql.sql) and
+[match_documents.plpython.sql](match_documents.plpython.sql).
 
-## Nearest neighbours — PL/pgSQL
+## Call the API
 
-KNN search needs a function because the relational `owner` filter and the `<=>` cosine-distance ordering live together server-side; the endpoint takes the query vector as text and casts it to `vector` inside the function.
+Responses are piped through `jq` to pretty-print them.
+
+**KNN + relational filter — PL/pgSQL** (`<=>` is cosine distance; `owner` scopes the search to one
+user — semantic similarity *and* a relational predicate in one query):
 
 ```bash
 curl -s -X POST "http://localhost:3000/rpc/match_documents_plpgsql" \
-  -H 'Content-Type: application/json' -d '{"query":"[0.10,0.20,0.30]","owner":1}'; echo
+  -H 'Content-Type: application/json' -d '{"query":"[0.10,0.20,0.30]","owner":1}' | jq
 ```
 
 ```json
-[{"content":"cat","distance":0}, 
- {"content":"dog","distance":0.0018}]
+[
+  {
+    "content": "cat",
+    "distance": 0
+  },
+  {
+    "content": "dog",
+    "distance": 0.0018
+  }
+]
 ```
 
-## Same via /rpc — PL/Python
-
-The same KNN-plus-filter logic written in PL/Python, returning the identical ranking through its own `/rpc` endpoint.
-
-```bash
-curl -s -X POST "http://localhost:3000/rpc/match_documents_plpython" \
-  -H 'Content-Type: application/json' -d '{"query":"[0.10,0.20,0.30]","owner":1}'; echo
-```
-
-```json
-[{"content":"cat","distance":0}, 
- {"content":"dog","distance":0.0018}]
-```
+The PL/Python variant (`/rpc/match_documents_plpython`) returns the identical result.
 
 ## The two implementations
 
-[match_documents.plpgsql.sql](match_documents.plpgsql.sql) and [match_documents.plpython.sql](match_documents.plpython.sql) express the same KNN-plus-relational-filter and return identically. In a real project they'd live in `functions/` and be applied with `./postgres4all apply-functions`.
+[match_documents.plpgsql.sql](match_documents.plpgsql.sql) and
+[match_documents.plpython.sql](match_documents.plpython.sql) run the same KNN-plus-filter query and
+return identically. In a real project these would live in `functions/` and `./postgres4all
+apply-functions` (no argument) would apply them from there.

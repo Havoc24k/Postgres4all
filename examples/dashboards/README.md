@@ -1,68 +1,89 @@
 # 📊 Dashboards (replaces Snowflake / a warehouse)
 
-Pre-aggregate raw events into a materialized rollup once, then serve the small, dashboard-ready result over HTTP — no per-request scan of the raw table, and no separate warehouse to feed. The `event_daily` matview is exposed directly as a REST endpoint, and the same rollup is also reachable as a callable function via `/rpc`.
+Pre-aggregate raw events into a materialized rollup once, then serve the small, dashboard-ready
+result over HTTP — no per-request scan of the raw table, and no separate warehouse to feed. The
+`event_daily` matview is exposed directly as a REST endpoint, and the same rollup is reachable as a
+callable function via `/rpc`.
 
 ## Prerequisites
 
-Enable this in `config.json` (PL/Python powers the second implementation):
+Enable this in `config.json` — `dashboards` needs `timeseries` (PL/Python powers the second
+implementation):
 
 ```jsonc
 {
-  "capabilities": { "dashboards": true, "timeseries": true, "api": true },
-  "languages": { "plpython": true, "allow_untrusted": true }
+  "capabilities": {
+    "dashboards": true,
+    "timeseries": true,
+    "api": true
+  },
+  "languages": {
+    "plpython": true,
+    "allow_untrusted": true
+  }
 }
 ```
 
-Then build and start the stack (see [../README.md](../README.md) for full setup):
+Build and start the stack (see [../README.md](../README.md) for full setup):
 
 ```bash
 ./postgres4all install
 ```
 
-## Run it
+## Load the example's functions
+
+Apply this folder's `/rpc` functions with the CLI — the binary does it, no scripts — and it reloads
+PostgREST's schema cache (give it a second before calling):
 
 ```bash
-bash examples/dashboards/run.sh
+./postgres4all apply-functions examples/dashboards
 ```
 
-Or follow the steps below by hand against `http://localhost:3000`.
+That loads [daily_rollup.plpgsql.sql](daily_rollup.plpgsql.sql) and
+[daily_rollup.plpython.sql](daily_rollup.plpython.sql).
 
-## Native REST: the pre-aggregated daily rollup (a materialized view)
+## Call the API
 
-PostgREST exposes the `event_daily` materialized view as a table, so the dashboard reads the rolled-up rows directly with `select` and `order` — no aggregation at request time.
+Responses are piped through `jq` to pretty-print them.
+
+**Native REST — the pre-aggregated rollup** (a materialized view read directly, no raw scan):
 
 ```bash
-curl -s "http://localhost:3000/event_daily?select=day,kind,n&order=day.asc"; echo
+curl -s "http://localhost:3000/event_daily?select=day,kind,n&order=day.asc" | jq
 ```
 
 ```json
-[{"day":"2026-06-01T00:00:00+00:00","kind":"click","n":1000}]
+[
+  {
+    "day": "2026-06-01T00:00:00+00:00",
+    "kind": "click",
+    "n": 1000
+  }
+]
 ```
 
-## Same rollup via /rpc — PL/pgSQL
-
-A function lets you reshape and relabel the rollup (here `n` becomes `events`); calling it over `/rpc` returns the function's table result as JSON.
+**Same rollup via an `/rpc` function — PL/pgSQL** (handy when you want to shape or relabel it — here
+`n` is returned as `events`):
 
 ```bash
-curl -s -X POST "http://localhost:3000/rpc/daily_rollup_plpgsql" -H 'Content-Type: application/json'; echo
+curl -s -X POST "http://localhost:3000/rpc/daily_rollup_plpgsql" -H 'Content-Type: application/json' | jq
 ```
 
 ```json
-[{"day":"2026-06-01","kind":"click","events":1000}]
+[
+  {
+    "day": "2026-06-01",
+    "kind": "click",
+    "events": 1000
+  }
+]
 ```
 
-## Same via /rpc — PL/Python (identical)
-
-The PL/Python implementation runs the same query through `plpy.execute` and returns the same shape — the language is an implementation detail behind the API.
-
-```bash
-curl -s -X POST "http://localhost:3000/rpc/daily_rollup_plpython" -H 'Content-Type: application/json'; echo
-```
-
-```json
-[{"day":"2026-06-01","kind":"click","events":1000}]
-```
+The PL/Python variant (`/rpc/daily_rollup_plpython`) returns the identical result.
 
 ## The two implementations
 
-[daily_rollup.plpgsql.sql](daily_rollup.plpgsql.sql) and [daily_rollup.plpython.sql](daily_rollup.plpython.sql) return identically. In a real project they'd live in `functions/` and be applied with `./postgres4all apply-functions`.
+[daily_rollup.plpgsql.sql](daily_rollup.plpgsql.sql) and
+[daily_rollup.plpython.sql](daily_rollup.plpython.sql) read the same `event_daily` matview and return
+identically. In a real project these would live in `functions/` and `./postgres4all apply-functions`
+(no argument) would apply them from there.

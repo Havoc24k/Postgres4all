@@ -14,7 +14,7 @@ cp config.example.json config.json           # enable the capabilities you want
 ./postgres4all generate                      # write build/ (no Docker)
 ./postgres4all install                       # generate + docker compose up
 ./postgres4all update [--allow-drop]         # change capabilities on a running install (data-safe)
-./postgres4all apply-functions               # apply functions/*.sql + reload PostgREST
+./postgres4all apply-functions [dir]         # apply <dir>/*.sql (default functions/, e.g. examples/vector) + reload PostgREST
 go test ./...                                # the test suite (table + golden)
 
 docker compose -f build/docker-compose.yml down      # stop (keeps data volume)
@@ -60,7 +60,8 @@ capabilities without losing data; a `down -v` + `install` only to start over.
   ACL before dropping `anon`; secrets are reused from `build/.env`. The delta SQL is golden-tested
   byte-for-byte (the goldens were captured from the now-retired bash and remain the oracle).
 - **`functions`** — `EmitSQL(dir)` concatenates `functions/*.sql` (sorted) + `NOTIFY pgrst, 'reload schema'`.
-  `apply-functions` (in `cmd/`) applies them in one transaction to a running install and reloads PostgREST.
+  `apply-functions [dir]` (in `cmd/`) applies a directory of `*.sql` (default `functions/`; a positional
+  arg points it at any folder, e.g. `examples/vector`) in one transaction to a running install and reloads PostgREST.
   A function doing privileged writes for unprivileged callers must be `SECURITY DEFINER` (see
   `functions/example_submit.sql`).
 - **`dockerx`** — `os/exec` wrappers: `Compose{Dir}` with `Run`/`ApplySQL`/`QueryInstalled`/`VolumeName`/
@@ -95,4 +96,7 @@ Version constants live in `internal/generate/generate.go` (`PGMajor`, `PostGISVe
 - Everything lives in the `public` schema so PostgREST and pg_graphql expose it with zero extra config.
 - Each capability's schema is in `internal/generate/capabilities/<cap>.schema.sql`, headed by a comment naming the system it replaces, with a runnable example query in the trailing comment. (These are embedded into the binary via `//go:embed`.)
 - Grants (built by `writeAPIGrants` in `internal/generate/generate.go`, assembled into `build/init/03-api-grants.sql`) are deliberately permissive for a demo (anon reads everything). Tighten before any real use.
-- The original bash `setup.sh` has been retired; the Go binary is the sole implementation. Runnable, API-first demos live under `examples/` (one per capability, each in PL/pgSQL and PL/Python).
+- The original bash `setup.sh` has been retired; the Go binary is the sole implementation. API-first demos
+  live under `examples/` — one self-contained folder per capability (a `README.md` runbook + the `/rpc`
+  function pair as `<name>.plpgsql.sql` + `<name>.plpython.sql`), with **no shell scripts**: the CLI loads
+  each via `./postgres4all apply-functions examples/<cap>` and the README's `curl … | jq` calls hit the API.

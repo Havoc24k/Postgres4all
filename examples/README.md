@@ -1,13 +1,16 @@
 # Examples
 
-One runnable example per capability — each one driving the **HTTP API** (PostgREST), and each one
-showing its business logic in **both PL/pgSQL and PL/Python**.
+One example per capability — each one driving the **HTTP API** (PostgREST), and each one showing its
+business logic in **both PL/pgSQL and PL/Python**.
 
 The point of the project is that Postgres gives you these capabilities *and* an API for free, so the
 examples talk to `http://localhost:3000`, not `psql`. Where a capability is a plain query, that's a
 native REST call (`GET /products?attributes=cs.{...}`). Where it needs server-side logic — vector
-KNN, GIS distance, a row-locking dequeue — the example defines a small `/rpc` function in **both**
+KNN, GIS distance, a row-locking dequeue — the example ships a small `/rpc` function in **both**
 languages so you can compare them side by side.
+
+There are no scripts: the `postgres4all` CLI loads each example's functions, and you call the API with
+`curl` (piped through `jq` for readable output).
 
 ## Layout
 
@@ -15,8 +18,7 @@ Each example is a self-contained folder you can read top-to-bottom:
 
 ```
 examples/<capability>/
-  README.md              a runbook: prerequisites, each call, and its real output
-  run.sh                 runs the whole example end-to-end
+  README.md              a runbook: prerequisites → load functions → call the API, with real output
   <name>.plpgsql.sql     the /rpc function — PL/pgSQL
   <name>.plpython.sql    the same /rpc function — PL/Python  (a literal diff away)
 ```
@@ -27,8 +29,14 @@ examples/<capability>/
 
    ```jsonc
    {
-     "capabilities": { "vector": true, "api": true },
-     "languages": { "plpython": true, "allow_untrusted": true }
+     "capabilities": {
+       "vector": true,
+       "api": true
+     },
+     "languages": {
+       "plpython": true,
+       "allow_untrusted": true
+     }
    }
    ```
 
@@ -39,11 +47,13 @@ examples/<capability>/
 
 2. `./postgres4all install`
 
-3. Run an example (or read its README and follow along by hand):
+3. Load an example's functions with the CLI, then follow its README:
 
    ```bash
-   bash examples/vector/run.sh
+   ./postgres4all apply-functions examples/vector
    ```
+
+You'll also want `curl` and `jq` on your PATH to call the API and pretty-print the responses.
 
 ## What each example shows
 
@@ -62,9 +72,10 @@ examples/<capability>/
 All examples need `"languages": { "plpython": true, "allow_untrusted": true }` so the PL/Python
 halves can run.
 
-## How the `/rpc` functions get defined
+## How the `/rpc` functions get loaded
 
-Each example keeps its function pair as two files — `<name>.plpgsql.sql` and `<name>.plpython.sql` —
-and `run.sh` loads both with the `apply_sql_dir` helper in [`lib.sh`](lib.sh), then tells PostgREST
-to reload. In a real project that SQL would live in `functions/` and you'd apply it with
-`./postgres4all apply-functions` — see [`functions/example_submit.sql`](../functions/example_submit.sql).
+Each example keeps its function pair as two files — `<name>.plpgsql.sql` and `<name>.plpython.sql`.
+`./postgres4all apply-functions examples/<capability>` applies both in one transaction and reloads
+PostgREST's schema cache. This is the same command a real project uses — there, the SQL lives in
+`functions/` and `./postgres4all apply-functions` (no argument) applies it from there. See
+[`functions/example_submit.sql`](../functions/example_submit.sql).

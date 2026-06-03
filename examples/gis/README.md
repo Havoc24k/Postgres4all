@@ -1,6 +1,9 @@
 # 🗺️ Maps (replaces a PostGIS GIS stack)
 
-Postgres with PostGIS does geospatial search natively: store points as geometry, index them with GiST, and answer "what's nearest to me?" over the HTTP API. This example exposes a nearest-neighbour distance search as a `/rpc` endpoint that takes a longitude/latitude and returns the closest places with their distance in metres.
+Postgres with PostGIS does geospatial search natively: store points as geometry, index them with
+GiST, and answer "what's nearest to me?" over the HTTP API. This example exposes a nearest-neighbour
+distance search as an `/rpc` that takes a longitude/latitude and returns the closest places with
+their distance in metres.
 
 ## Prerequisites
 
@@ -8,53 +11,65 @@ Enable this in `config.json` (PL/Python powers the second implementation):
 
 ```jsonc
 {
-  "capabilities": { "gis": true, "api": true },
-  "languages": { "plpython": true, "allow_untrusted": true }
+  "capabilities": {
+    "gis": true,
+    "api": true
+  },
+  "languages": {
+    "plpython": true,
+    "allow_untrusted": true
+  }
 }
 ```
 
-Then build and start the stack (see [../README.md](../README.md) for full setup):
+Build and start the stack (see [../README.md](../README.md) for full setup):
 
 ```bash
 ./postgres4all install
 ```
 
-## Run it
+## Load the example's functions
+
+Apply this folder's `/rpc` functions with the CLI — the binary does it, no scripts — and it reloads
+PostgREST's schema cache (give it a second before calling):
 
 ```bash
-bash examples/gis/run.sh
+./postgres4all apply-functions examples/gis
 ```
 
-Or follow the steps below by hand against `http://localhost:3000`.
+That loads [nearby_places.plpgsql.sql](nearby_places.plpgsql.sql) and
+[nearby_places.plpython.sql](nearby_places.plpython.sql).
 
-## Nearest cafes via /rpc — PL/pgSQL
+## Call the API
 
-The `<->` GiST-indexed KNN distance operator orders rows by proximity and `ST_DistanceSphere` returns the gap in metres; it lives in a function because PostgREST exposes callable SQL as `/rpc` endpoints.
+Responses are piped through `jq` to pretty-print them.
+
+**Nearest places to a point — PL/pgSQL** (`<->` is the GiST-indexed KNN distance operator;
+`ST_DistanceSphere` returns metres):
 
 ```bash
 curl -s -X POST "http://localhost:3000/rpc/nearby_places_plpgsql" \
-  -H 'Content-Type: application/json' -d '{"lon":-122.41,"lat":37.78}'
+  -H 'Content-Type: application/json' -d '{"lon":-122.41,"lat":37.78}' | jq
 ```
 
 ```json
-[{"name":"Cafe B","metres":562.7}, 
- {"name":"Cafe A","metres":1002.1}]
+[
+  {
+    "name": "Cafe B",
+    "metres": 562.7
+  },
+  {
+    "name": "Cafe A",
+    "metres": 1002.1
+  }
+]
 ```
 
-## Same via /rpc — PL/Python (identical)
-
-The same nearest-neighbour query, implemented in PL/Python with a prepared plan, returns the identical result through its own `/rpc` endpoint.
-
-```bash
-curl -s -X POST "http://localhost:3000/rpc/nearby_places_plpython" \
-  -H 'Content-Type: application/json' -d '{"lon":-122.41,"lat":37.78}'
-```
-
-```json
-[{"name":"Cafe B","metres":562.7}, 
- {"name":"Cafe A","metres":1002.1}]
-```
+The PL/Python variant (`/rpc/nearby_places_plpython`) returns the identical result.
 
 ## The two implementations
 
-[nearby_places.plpgsql.sql](nearby_places.plpgsql.sql) and [nearby_places.plpython.sql](nearby_places.plpython.sql) implement the same nearest-neighbour search two ways and return identically. In a real project they'd live in `functions/` and be applied with `./postgres4all apply-functions`.
+[nearby_places.plpgsql.sql](nearby_places.plpgsql.sql) and
+[nearby_places.plpython.sql](nearby_places.plpython.sql) run the same distance-ranked query and
+return identically. In a real project these would live in `functions/` and `./postgres4all
+apply-functions` (no argument) would apply them from there.

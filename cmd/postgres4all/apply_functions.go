@@ -12,9 +12,13 @@ func newApplyFunctionsCmd() *cobra.Command {
 	var out, dir string
 	var dryRun bool
 	cmd := &cobra.Command{
-		Use:   "apply-functions",
-		Short: "Apply functions/*.sql to a running install and reload PostgREST",
+		Use:   "apply-functions [dir]",
+		Short: "Apply a directory of *.sql (default functions/, e.g. examples/vector) to a running install and reload PostgREST",
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 1 {
+				dir = args[0] // positional dir wins over --dir, e.g. `apply-functions examples/vector`
+			}
 			sql, n, err := functions.EmitSQL(dir)
 			if err != nil {
 				return err

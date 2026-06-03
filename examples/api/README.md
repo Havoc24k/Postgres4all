@@ -1,6 +1,8 @@
 # 🔌 API (replaces hand-written Node/Python middleware)
 
-Postgres serves its own HTTP API: PostgREST turns every table into a REST endpoint, and a one-line wrapper function exposes `pg_graphql` over `/rpc` — so a GraphQL query and a REST read both resolve straight out of the database, with no application tier in between.
+Postgres serves its own HTTP API: PostgREST turns every table into a REST endpoint, and a one-line
+wrapper function exposes `pg_graphql` over `/rpc` — so a GraphQL query and a REST read both resolve
+straight out of the database, with no application tier in between.
 
 ## Prerequisites
 
@@ -8,62 +10,91 @@ Enable this in `config.json` (PL/Python powers the second implementation):
 
 ```jsonc
 {
-  "capabilities": { "document_store": true, "api": true },
-  "languages": { "plpython": true, "allow_untrusted": true }
+  "capabilities": {
+    "document_store": true,
+    "api": true
+  },
+  "languages": {
+    "plpython": true,
+    "allow_untrusted": true
+  }
 }
 ```
 
-Then build and start the stack (see [../README.md](../README.md) for full setup):
+Build and start the stack (see [../README.md](../README.md) for full setup):
 
 ```bash
 ./postgres4all install
 ```
 
-## Run it
+## Load the example's functions
+
+Apply this folder's GraphQL-wrapper functions with the CLI — the binary does it, no scripts — and it
+reloads PostgREST's schema cache (give it a second before calling):
 
 ```bash
-bash examples/api/run.sh
+./postgres4all apply-functions examples/api
 ```
 
-Or follow the steps below by hand against `http://localhost:3000`.
+That loads [graphql.plpgsql.sql](graphql.plpgsql.sql) and [graphql.plpython.sql](graphql.plpython.sql).
 
-## REST for free: every table is an endpoint
+## Call the API
 
-PostgREST exposes each table as a REST resource, so an anonymous `GET` reads `products` directly — no route, controller, or serializer to write.
+Responses are piped through `jq` to pretty-print them.
+
+**REST for free — every table is an endpoint** (anonymous `GET`, no route or controller to write):
 
 ```bash
-curl -s "http://localhost:3000/products?select=id,name&limit=3"; echo
+curl -s "http://localhost:3000/products?select=id,name&limit=3" | jq
 ```
 
 ```json
-[{"id":1,"name":"Mechanical Keyboard"}, 
- {"id":2,"name":"USB-C Hub"}]
+[
+  {
+    "id": 1,
+    "name": "Mechanical Keyboard"
+  },
+  {
+    "id": 2,
+    "name": "USB-C Hub"
+  }
+]
 ```
 
-## Same GraphQL query via a /rpc function — PL/pgSQL
-
-`pg_graphql` lives inside the database, so a one-line `graphql_plpgsql(query)` wrapper hands the GraphQL string to `graphql.resolve()` and PostgREST publishes it at `/rpc`.
+**GraphQL via an `/rpc` function — PL/pgSQL** (`pg_graphql` lives in the database; the wrapper hands
+the query string to `graphql.resolve()`):
 
 ```bash
-curl -s -X POST "http://localhost:3000/rpc/graphql_plpgsql" -H 'Content-Type: application/json' -d '{"query":"{ productsCollection { edges { node { name } } } }"}'; echo
+curl -s -X POST "http://localhost:3000/rpc/graphql_plpgsql" \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"{ productsCollection { edges { node { name } } } }"}' | jq
 ```
 
 ```json
-{"data": {"productsCollection": {"edges": [{"node": {"name": "Mechanical Keyboard"}}, {"node": {"name": "USB-C Hub"}}]}}}
+{
+  "data": {
+    "productsCollection": {
+      "edges": [
+        {
+          "node": {
+            "name": "Mechanical Keyboard"
+          }
+        },
+        {
+          "node": {
+            "name": "USB-C Hub"
+          }
+        }
+      ]
+    }
+  }
+}
 ```
 
-## …and PL/Python (identical)
-
-The same wrapper written in PL/Python calls `graphql.resolve()` through `plpy` and returns the exact same payload.
-
-```bash
-curl -s -X POST "http://localhost:3000/rpc/graphql_plpython" -H 'Content-Type: application/json' -d '{"query":"{ productsCollection { edges { node { name } } } }"}'; echo
-```
-
-```json
-{"data": {"productsCollection": {"edges": [{"node": {"name": "Mechanical Keyboard"}}, {"node": {"name": "USB-C Hub"}}]}}}
-```
+The PL/Python variant (`/rpc/graphql_plpython`) returns the identical result.
 
 ## The two implementations
 
-Both wrappers return identically: [graphql.plpgsql.sql](graphql.plpgsql.sql) and [graphql.plpython.sql](graphql.plpython.sql). In a real project they'd live in `functions/` and be applied with `./postgres4all apply-functions`.
+[graphql.plpgsql.sql](graphql.plpgsql.sql) and [graphql.plpython.sql](graphql.plpython.sql) wrap the
+same `graphql.resolve()` call and return identically. In a real project these would live in
+`functions/` and `./postgres4all apply-functions` (no argument) would apply them from there.
