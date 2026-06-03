@@ -7,6 +7,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // composeNameRe constrains compose project/service names to a safe, lowercase-only subset.
@@ -30,6 +31,11 @@ type SecurityCfg struct {
 	// role SELECT on every FUTURE table (ALTER DEFAULT PRIVILEGES). Default false: new tables
 	// are NOT exposed to anon unless you grant them explicitly.
 	AnonFutureTables bool `json:"anon_future_tables"`
+	// JWTAudience, when set, is published as PGRST_JWT_AUD (PostgREST then requires a matching
+	// `aud` claim) and is embedded in tokens minted by `postgres4all mint-token`.
+	JWTAudience string `json:"jwt_audience"`
+	// JWTTTL is the default lifetime for `mint-token` (Go duration, e.g. "15m"). Empty = 15m.
+	JWTTTL string `json:"jwt_ttl"`
 }
 
 // ComposeCfg names the generated docker compose stack and its services. All optional:
@@ -99,6 +105,16 @@ func (c *Config) PostgRESTService() string {
 	return "postgrest"
 }
 
+// TokenTTL is the default lifetime for minted tokens (security.jwt_ttl, or 15m).
+func (c *Config) TokenTTL() time.Duration {
+	if c.Security.JWTTTL != "" {
+		if d, err := time.ParseDuration(c.Security.JWTTTL); err == nil {
+			return d
+		}
+	}
+	return 15 * time.Minute
+}
+
 // Validate aggregates all problems into one error.
 func (c *Config) Validate() error {
 	var problems []string
@@ -145,6 +161,11 @@ func (c *Config) Validate() error {
 	}
 	if c.DBService() == c.PostgRESTService() {
 		problems = append(problems, fmt.Sprintf("compose db and postgrest service names must differ (both %q)", c.DBService()))
+	}
+	if c.Security.JWTTTL != "" {
+		if _, err := time.ParseDuration(c.Security.JWTTTL); err != nil {
+			problems = append(problems, fmt.Sprintf("invalid security.jwt_ttl %q (use a Go duration like 15m, 1h)", c.Security.JWTTTL))
+		}
 	}
 	if len(problems) > 0 {
 		return errors.New("invalid config:\n  - " + strings.Join(problems, "\n  - "))

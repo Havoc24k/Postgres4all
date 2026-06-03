@@ -29,6 +29,9 @@
       PGRST_DB_SCHEMAS: public
       PGRST_DB_ANON_ROLE: anon
       PGRST_JWT_SECRET: ${JWT_SECRET}
+{{- if .JWTAud}}
+      PGRST_JWT_AUD: {{.JWTAud}}
+{{- end}}
     ports:
       - "{{.Bind}}3000:3000"
     depends_on:

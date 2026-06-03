@@ -28,7 +28,7 @@ Build and start the stack (see [../README.md](../README.md) for full setup):
 ./postgres4all install
 ```
 
-You also need `openssl` and `jq` on your PATH (to sign tokens and pretty-print responses).
+You also need `jq` on your PATH (to pretty-print responses).
 
 ### Where the JWT secret comes from
 
@@ -54,28 +54,21 @@ That loads [my_notes.plpgsql.sql](my_notes.plpgsql.sql) and [my_notes.plpython.s
 Run the steps below **from the repo root, in one shell session** (the token variables must persist).
 JSON responses are piped through `jq`.
 
-### 1. Sign a token for each user
+### 1. Mint a token for each user
 
-A request authenticates with a **JWT**: three base64url parts — `header.payload.signature` — where the
-signature is `HMAC-SHA256(header.payload, JWT_SECRET)`. The payload's `role` becomes the Postgres role
-PostgREST switches to, and its `sub` is the identity RLS keys each note's `owner` to. Read the
-auto-generated secret from `build/.env` and sign one token per user:
+A request authenticates with a **JWT** whose `sub` claim is the identity RLS keys each note's `owner`
+to, and whose `role` claim is the Postgres role PostgREST switches to. `postgres4all mint-token` signs
+one (HS256, with the install's auto-generated `JWT_SECRET`) and prints it — short-lived (15m by
+default) and **expiring**, so a leaked token doesn't work forever:
 
 ```bash
-SECRET=$(grep '^JWT_SECRET=' build/.env | cut -d= -f2-)   # the secret install generated
-
-b64() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }   # base64url, no padding
-mk_jwt() {                                                # mk_jwt <username> -> signed token
-  local hdr pay
-  hdr=$(printf '{"alg":"HS256","typ":"JWT"}' | b64)
-  pay=$(printf '{"role":"authenticated","sub":"%s"}' "$1" | b64)
-  printf '%s.%s.%s' "$hdr" "$pay" \
-    "$(printf '%s.%s' "$hdr" "$pay" | openssl dgst -binary -sha256 -hmac "$SECRET" | b64)"
-}
-
-ALICE=$(mk_jwt alice)
-BOB=$(mk_jwt bob)
+ALICE=$(./postgres4all mint-token --sub alice)
+BOB=$(./postgres4all mint-token --sub bob)
 ```
+
+No `openssl`, no hand-signing. When a token expires, PostgREST replies `401 JWT expired` — re-mint it.
+(Set a default lifetime with `security.jwt_ttl`, or bind tokens to this deployment with
+`security.jwt_audience` → `PGRST_JWT_AUD`.)
 
 ### 2. No token → no access
 

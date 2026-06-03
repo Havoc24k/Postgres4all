@@ -152,7 +152,8 @@ Runnable, seeded versions live in [`examples/`](examples/) — one per capabilit
   build dir), and `services` renames the `db` / `postgrest` services. Set `project` before the first
   `install` — changing it later points at a different (empty) data volume.
 - **Hardening** (`security`, all optional): `anon_future_tables` (default `false`) keeps newly-created
-  tables private to `anon` — set `true` only to restore the demo's auto-grant. Run `./postgres4all
+  tables private to `anon`; `jwt_ttl` (default `15m`) and `jwt_audience` set the lifetime/audience for
+  `./postgres4all mint-token` (`jwt_audience` also publishes `PGRST_JWT_AUD`). Run `./postgres4all
   audit` to list the remaining production-readiness gaps (it exits non-zero on critical ones).
 - `build/` is generated and git-ignored — never hand-edit it.
 

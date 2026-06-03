@@ -22,6 +22,7 @@ func main() {
 	root.AddCommand(newUpdateCmd())
 	root.AddCommand(newApplyFunctionsCmd())
 	root.AddCommand(newAuditCmd())
+	root.AddCommand(newMintTokenCmd())
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "ERROR:", err)
 		os.Exit(1)

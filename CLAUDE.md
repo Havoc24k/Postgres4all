@@ -16,6 +16,7 @@ cp config.example.json config.json           # enable the capabilities you want
 ./postgres4all update [--allow-drop]         # change capabilities on a running install (data-safe)
 ./postgres4all apply-functions [dir]         # apply <dir>/*.sql (default functions/, e.g. examples/vector) + reload PostgREST
 ./postgres4all audit [--strict]              # report production-readiness gaps (exits nonzero on critical; --strict also fails on high)
+./postgres4all mint-token --sub <user>       # sign a short-lived HS256 JWT (exp + optional aud) with build/.env JWT_SECRET
 go test ./...                                # the test suite (table + golden)
 
 docker compose -f build/docker-compose.yml down      # stop (keeps data volume)

@@ -397,6 +397,7 @@ func writeCompose(c *config.Config, outDir string) error {
 		Name             string
 		DBService        string
 		PostgRESTService string
+		JWTAud           string
 	}
 
 	m := composeModel{
@@ -407,6 +408,7 @@ func writeCompose(c *config.Config, outDir string) error {
 		Name:             c.ProjectName(),
 		DBService:        c.DBService(),
 		PostgRESTService: c.PostgRESTService(),
+		JWTAud:           c.Security.JWTAudience,
 	}
 
 	tmpl, err := template.ParseFS(templatesFS, "templates/docker-compose.yml.tmpl")

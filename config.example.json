@@ -30,6 +30,8 @@
     }
   },
   "security": {
-    "anon_future_tables": false
+    "anon_future_tables": false,
+    "jwt_audience": "",
+    "jwt_ttl": "15m"
   }
 }
