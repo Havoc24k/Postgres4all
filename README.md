@@ -151,6 +151,9 @@ Runnable, seeded versions live in [`examples/`](examples/) — one per capabilit
 - **Names** (`compose`, all optional): `project` sets the docker compose stack name (default: the
   build dir), and `services` renames the `db` / `postgrest` services. Set `project` before the first
   `install` — changing it later points at a different (empty) data volume.
+- **Hardening** (`security`, all optional): `anon_future_tables` (default `false`) keeps newly-created
+  tables private to `anon` — set `true` only to restore the demo's auto-grant. Run `./postgres4all
+  audit` to list the remaining production-readiness gaps (it exits non-zero on critical ones).
 - `build/` is generated and git-ignored — never hand-edit it.
 
 ---

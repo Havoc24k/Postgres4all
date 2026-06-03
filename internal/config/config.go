@@ -21,6 +21,15 @@ type Config struct {
 	Capabilities map[string]bool `json:"capabilities"`
 	Languages    LanguagesCfg    `json:"languages"`
 	Compose      ComposeCfg      `json:"compose"`
+	Security     SecurityCfg     `json:"security"`
+}
+
+// SecurityCfg holds hardening toggles. Defaults are the safe choice.
+type SecurityCfg struct {
+	// AnonFutureTables, when true, restores the demo behavior of auto-granting the anonymous
+	// role SELECT on every FUTURE table (ALTER DEFAULT PRIVILEGES). Default false: new tables
+	// are NOT exposed to anon unless you grant them explicitly.
+	AnonFutureTables bool `json:"anon_future_tables"`
 }
 
 // ComposeCfg names the generated docker compose stack and its services. All optional:

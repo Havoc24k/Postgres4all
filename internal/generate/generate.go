@@ -285,7 +285,9 @@ func writeAPIGrants(c *config.Config, outDir string) error {
 
 	sb.WriteString("GRANT USAGE ON SCHEMA graphql TO anon, authenticated;\n")
 	sb.WriteString("GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA graphql TO anon, authenticated;\n")
-	sb.WriteString("ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO anon;\n")
+	if c.Security.AnonFutureTables {
+		sb.WriteString("ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO anon;\n")
+	}
 
 	return os.WriteFile(filepath.Join(outDir, "init", "03-api-grants.sql"), []byte(sb.String()), 0o644)
 }

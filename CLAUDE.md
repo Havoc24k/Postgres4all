@@ -101,7 +101,7 @@ Version constants live in `internal/generate/generate.go` (`PGMajor`, `PostGISVe
 
 - Everything lives in the `public` schema so PostgREST and pg_graphql expose it with zero extra config.
 - Each capability's schema is in `internal/generate/capabilities/<cap>.schema.sql`, headed by a comment naming the system it replaces, with a runnable example query in the trailing comment. (These are embedded into the binary via `//go:embed`.)
-- Grants (built by `writeAPIGrants` in `internal/generate/generate.go`, assembled into `build/init/03-api-grants.sql`) are deliberately permissive for a demo (anon reads everything). Tighten before any real use.
+- Grants (built by `writeAPIGrants` in `internal/generate/generate.go`, assembled into `build/init/03-api-grants.sql`) are deliberately permissive for a demo (anon reads the explicitly-granted demo tables). By default anon is NOT auto-granted on FUTURE tables; `security.anon_future_tables: true` restores that. `./postgres4all audit` reports remaining gaps. Tighten before any real use.
 - The original bash `setup.sh` has been retired; the Go binary is the sole implementation. API-first demos
   live under `examples/` — one self-contained folder per capability (a `README.md` runbook + the `/rpc`
   function pair as `<name>.plpgsql.sql` + `<name>.plpython.sql`). The CLI loads

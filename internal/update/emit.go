@@ -69,7 +69,9 @@ func EmitAddSQL(cfg *config.Config, add, installed []string) string {
 
 		sb.WriteString("GRANT USAGE ON SCHEMA graphql TO anon, authenticated;\n")
 		sb.WriteString("GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA graphql TO anon, authenticated;\n")
-		sb.WriteString("ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO anon;\n")
+		if cfg.Security.AnonFutureTables {
+			sb.WriteString("ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO anon;\n")
+		}
 	}
 
 	// Per-cap loop: schema fragments for each cap being added (excluding api).

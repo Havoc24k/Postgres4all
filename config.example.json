@@ -28,5 +28,8 @@
       "db": "",
       "postgrest": ""
     }
+  },
+  "security": {
+    "anon_future_tables": false
   }
 }

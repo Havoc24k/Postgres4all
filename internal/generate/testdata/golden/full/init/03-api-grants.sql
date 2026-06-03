@@ -4,4 +4,3 @@ GRANT SELECT ON products, jobs, articles, documents, places, events, event_daily
 GRANT SELECT, INSERT, UPDATE, DELETE ON notes TO authenticated;
 GRANT USAGE ON SCHEMA graphql TO anon, authenticated;
 GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA graphql TO anon, authenticated;
-ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO anon;

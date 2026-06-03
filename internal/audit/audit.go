@@ -34,9 +34,12 @@ func Run(c *config.Config) []Finding {
 		"Schedule pg_dump or pgBackRest, archive WAL off-host, and test-restore regularly.")
 
 	if api {
-		add("high", "Permissive anonymous access",
-			"The unauthenticated `anon` role is granted SELECT on the public tables, and default privileges grant anon SELECT on future tables; row-level security protects only `notes`.",
-			"Restrict anon grants to intended tables, drop the blanket default-privilege grant, and add RLS to any multi-tenant table.")
+		anonDetail := "The unauthenticated `anon` role is granted SELECT on the public tables; row-level security protects only `notes`."
+		if c.Security.AnonFutureTables {
+			anonDetail = "The unauthenticated `anon` role is granted SELECT on the public tables AND on any FUTURE table (security.anon_future_tables=true); row-level security protects only `notes`."
+		}
+		add("high", "Permissive anonymous access", anonDetail,
+			"Restrict anon grants to intended tables and add RLS to multi-tenant tables; keep security.anon_future_tables=false so new tables are not auto-exposed.")
 		add("high", "API served over plain HTTP",
 			"PostgREST listens on plain HTTP (port 3000) with no TLS, so Bearer tokens and data travel in cleartext.",
 			"Terminate TLS at a reverse proxy in front of PostgREST (or enable PostgREST SSL).")

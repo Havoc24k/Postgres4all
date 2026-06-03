@@ -61,6 +61,27 @@ func TestGeneratePreservesSecrets(t *testing.T) {
 	}
 }
 
+func TestAnonFutureTablesGrant(t *testing.T) {
+	const line = "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO anon;"
+	grants := func(c *config.Config) string {
+		out := t.TempDir()
+		if err := Generate(c, out); err != nil {
+			t.Fatal(err)
+		}
+		b, _ := os.ReadFile(filepath.Join(out, "init", "03-api-grants.sql"))
+		return string(b)
+	}
+	// default: secure — no blanket future-table grant to anon
+	if strings.Contains(grants(cfg([]string{"document_store", "api"}, nil)), line) {
+		t.Errorf("default grants must NOT auto-grant anon SELECT on future tables")
+	}
+	// opt-in restores the demo behavior
+	opt := cfg([]string{"document_store", "api"}, func(c *config.Config) { c.Security.AnonFutureTables = true })
+	if !strings.Contains(grants(opt), line) {
+		t.Errorf("security.anon_future_tables=true must grant anon on future tables")
+	}
+}
+
 func TestGenerateGolden(t *testing.T) {
 	cases := map[string]*config.Config{
 		"minimal":  cfg([]string{"document_store"}, nil),
