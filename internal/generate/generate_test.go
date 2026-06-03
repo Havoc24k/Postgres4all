@@ -26,15 +26,48 @@ func cfg(caps []string, mut func(*config.Config)) *config.Config {
 	return c
 }
 
-func withAPI(c *config.Config) { c.API.AuthenticatorPassword = "a"; c.API.JWTSecret = "j" }
+func TestGeneratePreservesSecrets(t *testing.T) {
+	c := cfg([]string{"document_store", "api", "auth"}, nil)
+	out := t.TempDir()
+	read := func() (pg, auth, jwt string) {
+		b, _ := os.ReadFile(filepath.Join(out, ".env"))
+		for _, line := range strings.Split(string(b), "\n") {
+			if k, v, ok := strings.Cut(line, "="); ok {
+				switch k {
+				case "POSTGRES_PASSWORD":
+					pg = v
+				case "AUTHENTICATOR_PASSWORD":
+					auth = v
+				case "JWT_SECRET":
+					jwt = v
+				}
+			}
+		}
+		return
+	}
+	if err := Generate(c, out); err != nil {
+		t.Fatal(err)
+	}
+	pg1, a1, j1 := read()
+	if a1 == "" || j1 == "" {
+		t.Fatalf("api secrets missing from .env: auth=%q jwt=%q", a1, j1)
+	}
+	if err := Generate(c, out); err != nil { // regenerate into the same dir
+		t.Fatal(err)
+	}
+	pg2, a2, j2 := read()
+	if pg1 != pg2 || a1 != a2 || j1 != j2 {
+		t.Fatalf("secrets changed on regenerate:\n  pg   %q -> %q\n  auth %q -> %q\n  jwt  %q -> %q", pg1, pg2, a1, a2, j1, j2)
+	}
+}
 
 func TestGenerateGolden(t *testing.T) {
 	cases := map[string]*config.Config{
 		"minimal":  cfg([]string{"document_store"}, nil),
 		"gis":      cfg([]string{"gis"}, nil),
-		"api_only": cfg([]string{"api", "auth"}, withAPI), // api on, no read-caps -> no GRANT SELECT table line
-		"api_auth": cfg([]string{"document_store", "api", "auth"}, withAPI),
-		"full":     cfg(config.Order, withAPI),
+		"api_only": cfg([]string{"api", "auth"}, nil), // api on, no read-caps -> no GRANT SELECT table line
+		"api_auth": cfg([]string{"document_store", "api", "auth"}, nil),
+		"full":     cfg(config.Order, nil),
 		"languages": cfg([]string{"document_store"}, func(c *config.Config) {
 			c.Languages.PLPerl = true
 			c.Languages.PLPython = true
@@ -82,7 +115,7 @@ func listFiles(t *testing.T, dir string) []string {
 		if err != nil {
 			return err
 		}
-		if !d.IsDir() {
+		if !d.IsDir() && d.Name() != ".env" { // .env holds random secrets; checked by TestEnvSecretSizes
 			rel, _ := filepath.Rel(dir, p)
 			out = append(out, rel)
 		}
@@ -152,7 +185,6 @@ func TestEnvSecretSizes(t *testing.T) {
 
 func TestComposeNamingCustom(t *testing.T) {
 	c := cfg([]string{"document_store", "api", "auth"}, func(c *config.Config) {
-		withAPI(c)
 		c.Compose = config.ComposeCfg{
 			Project:  "myapp",
 			Services: map[string]string{"db": "postgres", "postgrest": "rest"},
@@ -181,7 +213,7 @@ func TestComposeNamingCustom(t *testing.T) {
 }
 
 func TestComposeNamingDefaultsUnchanged(t *testing.T) {
-	c := cfg([]string{"document_store", "api", "auth"}, withAPI)
+	c := cfg([]string{"document_store", "api", "auth"}, nil)
 	out := t.TempDir()
 	if err := Generate(c, out); err != nil {
 		t.Fatal(err)

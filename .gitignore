@@ -12,5 +12,3 @@ config.json
 .beads/
 dist/
 
-# keep generate golden .env fixtures tracked (deterministic test values)
-!internal/generate/testdata/golden/*/.env

@@ -41,25 +41,8 @@ func newUpdateCmd() *cobra.Command {
 				return err
 			}
 
-			// Step 2: Secret preservation — BEFORE Generate.
-			// If a config field is empty but the old build/.env has a value, reuse it.
-			if c.Postgres.Password == "" {
-				if old := dockerx.EnvValue(out, "POSTGRES_PASSWORD"); old != "" {
-					c.Postgres.Password = old
-				}
-			}
-			if c.API.AuthenticatorPassword == "" {
-				if old := dockerx.EnvValue(out, "AUTHENTICATOR_PASSWORD"); old != "" {
-					c.API.AuthenticatorPassword = old
-				}
-			}
-			if c.API.JWTSecret == "" {
-				if old := dockerx.EnvValue(out, "JWT_SECRET"); old != "" {
-					c.API.JWTSecret = old
-				}
-			}
-
-			// Step 3: Regenerate build/ (reuses preserved secrets; random-generates any still empty).
+			// Step 2: Regenerate build/. Secrets are preserved inside generate.Generate (it reuses the
+			// existing build/.env), so they survive regeneration without any config plumbing here.
 			if err := generate.Generate(c, out); err != nil {
 				return err
 			}

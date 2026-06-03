@@ -32,20 +32,11 @@ You also need `openssl` and `jq` on your PATH (to sign tokens and pretty-print r
 
 ### Where the JWT secret comes from
 
-Auth hinges on a secret that signs and verifies tokens. The `api` block of `config.json` holds it:
-
-```jsonc
-"api": {
-  "authenticator_password": "",
-  "jwt_secret": ""
-}
-```
-
-Left **empty** (the default), `install` **auto-generates** both into `build/.env` (mode `0600`):
-`JWT_SECRET` is what PostgREST verifies every token against, and `AUTHENTICATOR_PASSWORD` is the
-password PostgREST logs in with. This example reads the generated `JWT_SECRET` from `build/.env` to
-sign Alice's and Bob's tokens — so it works without you choosing a secret. Set either value in
-`config.json` to pin a known one instead (e.g. to mint tokens elsewhere).
+Auth hinges on a secret that signs and verifies tokens. You don't configure it: `install`
+**auto-generates** it into `build/.env` (mode `0600`). `JWT_SECRET` is what PostgREST verifies every
+token against, and `AUTHENTICATOR_PASSWORD` is the password PostgREST logs in with. This example reads
+the generated `JWT_SECRET` from `build/.env` to sign Alice's and Bob's tokens — so it works without you
+choosing a secret, and the secret is preserved across `./postgres4all update` so tokens stay valid.
 
 ## Load the example's functions
 

@@ -19,7 +19,6 @@ type Config struct {
 	Postgres     PostgresCfg     `json:"postgres"`
 	SeedDemoData *bool           `json:"seed_demo_data"`
 	Capabilities map[string]bool `json:"capabilities"`
-	API          APICfg          `json:"api"`
 	Languages    LanguagesCfg    `json:"languages"`
 	Compose      ComposeCfg      `json:"compose"`
 }
@@ -36,10 +35,6 @@ type PostgresCfg struct {
 	DB                string `json:"db"`
 	Password          string `json:"password"`
 	PublishExternally bool   `json:"publish_externally"`
-}
-type APICfg struct {
-	AuthenticatorPassword string `json:"authenticator_password"`
-	JWTSecret             string `json:"jwt_secret"`
 }
 type LanguagesCfg struct {
 	PLPerl         bool `json:"plperl"`

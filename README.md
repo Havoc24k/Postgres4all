@@ -127,10 +127,6 @@ Runnable, seeded versions live in [`examples/`](examples/) — one per capabilit
     "api":            true,
     "auth":           false
   },
-  "api": {
-    "authenticator_password": "",
-    "jwt_secret": ""
-  },
   "languages": {
     "plperl": false,
     "plpython": false,
@@ -146,9 +142,10 @@ Runnable, seeded versions live in [`examples/`](examples/) — one per capabilit
 }
 ```
 
-- **Secrets** (`postgres.password`, `api.authenticator_password`, `api.jwt_secret`) are taken from
-  config if set, else auto-generated into `build/.env` (mode `0600`). API users read `JWT_SECRET`
-  there to mint tokens.
+- **Secrets:** `postgres.password` is taken from config if set, else auto-generated into `build/.env`
+  (mode `0600`). The API's `AUTHENTICATOR_PASSWORD` and `JWT_SECRET` have no config field — they're
+  always auto-generated there (and preserved across `update`); API users read `JWT_SECRET` from
+  `build/.env` to mint tokens.
 - **Networking:** 5432/3000 bind to `127.0.0.1` only — set `"publish_externally": true` in `postgres`
   to bind all interfaces.
 - **Names** (`compose`, all optional): `project` sets the docker compose stack name (default: the

@@ -75,6 +75,9 @@ EOSQL
 // It deletes only its own artifacts (Dockerfile, docker-compose.yml, .env, init/)
 // before regenerating — never removes the entire outDir.
 func Generate(c *config.Config, outDir string) error {
+	// Capture existing secrets before we delete .env, so regeneration (e.g. via `update`) keeps them.
+	preserved := readEnv(filepath.Join(outDir, ".env"))
+
 	// Step 1: Delete owned artifacts, then recreate init/.
 	for _, name := range []string{"Dockerfile", "docker-compose.yml", ".env"} {
 		_ = os.Remove(filepath.Join(outDir, name))
@@ -115,7 +118,7 @@ func Generate(c *config.Config, outDir string) error {
 	}
 
 	// Step 7: Resolve secrets and write .env.
-	if err := writeEnv(c, outDir); err != nil {
+	if err := writeEnv(c, outDir, preserved); err != nil {
 		return err
 	}
 
@@ -287,10 +290,28 @@ func writeAPIGrants(c *config.Config, outDir string) error {
 	return os.WriteFile(filepath.Join(outDir, "init", "03-api-grants.sql"), []byte(sb.String()), 0o644)
 }
 
+// readEnv parses KEY=value lines from an .env file; returns an empty map if it's absent.
+func readEnv(path string) map[string]string {
+	m := map[string]string{}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return m
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		if k, v, ok := strings.Cut(line, "="); ok {
+			m[k] = strings.TrimRight(v, "\r")
+		}
+	}
+	return m
+}
+
 // writeEnv resolves secrets and writes .env (mode 0o600).
-func writeEnv(c *config.Config, outDir string) error {
-	// Resolve postgres password.
+func writeEnv(c *config.Config, outDir string, preserved map[string]string) error {
+	// Postgres password: config value > preserved (existing .env) > freshly generated.
 	pgPass := c.Postgres.Password
+	if pgPass == "" {
+		pgPass = preserved["POSTGRES_PASSWORD"]
+	}
 	if pgPass == "" {
 		var err error
 		pgPass, err = secrets.Hex(24)
@@ -299,10 +320,10 @@ func writeEnv(c *config.Config, outDir string) error {
 		}
 	}
 
-	// Resolve API secrets if needed.
-	authPw := c.API.AuthenticatorPassword
-	jwt := c.API.JWTSecret
+	// API secrets are always auto-generated (no config knob); preserved across regeneration.
+	var authPw, jwt string
 	if c.Enabled("api") {
+		authPw = preserved["AUTHENTICATOR_PASSWORD"]
 		if authPw == "" {
 			var err error
 			authPw, err = secrets.Hex(16)
@@ -310,6 +331,7 @@ func writeEnv(c *config.Config, outDir string) error {
 				return fmt.Errorf("generating authenticator password: %w", err)
 			}
 		}
+		jwt = preserved["JWT_SECRET"]
 		if jwt == "" {
 			var err error
 			jwt, err = secrets.Hex(48)

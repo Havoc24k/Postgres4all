@@ -46,7 +46,8 @@ capabilities without losing data; a `down -v` + `install` only to start over.
   canonical capability order. `compose.project` + `compose.services{db,postgrest}` name the stack/services,
   read via `ProjectName()`/`DBService()`/`PostgRESTService()` (empty → defaults `db`/`postgrest`).
 - **`secrets`** — `Hex(n)` via `crypto/rand` (`POSTGRES_PASSWORD`=Hex(24), `AUTHENTICATOR_PASSWORD`=Hex(16),
-  `JWT_SECRET`=Hex(48) on the random path).
+  `JWT_SECRET`=Hex(48)). API secrets have no config field — always generated, and preserved across
+  regeneration: `generate` reuses any existing `build/.env` (so `update` keeps them stable).
 - **`generate`** — `Generate(cfg, outDir)` writes `build/` via embedded `text/template` files
   (`templates/*.tmpl`) + embedded capability SQL (`capabilities/*.sql`, the single source of truth).
   Exports `ExtensionMap`, `ReadTableMap`, `ReadCapabilitySQL`, `GeneratedImage`. Every init SQL file
