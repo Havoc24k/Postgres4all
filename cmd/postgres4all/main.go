@@ -21,6 +21,7 @@ func main() {
 	root.AddCommand(newInstallCmd())
 	root.AddCommand(newUpdateCmd())
 	root.AddCommand(newApplyFunctionsCmd())
+	root.AddCommand(newAuditCmd())
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "ERROR:", err)
 		os.Exit(1)

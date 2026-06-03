@@ -15,6 +15,7 @@ cp config.example.json config.json           # enable the capabilities you want
 ./postgres4all install                       # generate + docker compose up
 ./postgres4all update [--allow-drop]         # change capabilities on a running install (data-safe)
 ./postgres4all apply-functions [dir]         # apply <dir>/*.sql (default functions/, e.g. examples/vector) + reload PostgREST
+./postgres4all audit [--strict]              # report production-readiness gaps (exits nonzero on critical; --strict also fails on high)
 go test ./...                                # the test suite (table + golden)
 
 docker compose -f build/docker-compose.yml down      # stop (keeps data volume)
