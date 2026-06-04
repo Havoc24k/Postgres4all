@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/Havoc24k/postgres4all/internal/dockerx"
 	"github.com/Havoc24k/postgres4all/internal/functions"
@@ -18,6 +19,13 @@ func newApplyFunctionsCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 1 {
 				dir = args[0] // positional dir wins over --dir, e.g. `apply-functions examples/vector`
+			}
+			warnings, err := functions.Lint(dir)
+			if err != nil {
+				return err
+			}
+			for _, w := range warnings {
+				fmt.Fprintln(os.Stderr, "warning: "+w)
 			}
 			sql, n, err := functions.EmitSQL(dir)
 			if err != nil {
