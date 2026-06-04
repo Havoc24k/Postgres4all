@@ -13,6 +13,13 @@ import (
 // risk) or an `OWNER TO` reassignment (would be owned by the superuser).
 // SQL line comments (-- to end of line) are stripped before scanning so that
 // commented-out statements never satisfy a check.
+//
+// Scope is deliberately file-level, not per-function: the checks assume the
+// project convention of one SECURITY DEFINER function per file. A file mixing an
+// owned and an unowned definer would not be flagged. That is acceptable because
+// this lint is an advisory nudge, not the privilege boundary — the actual
+// guarantee is the powerless api_owner role plus the explicit OWNER TO in each
+// file. Parsing per-function scope is intentionally out of scope (YAGNI here).
 func Lint(dir string) ([]string, error) {
 	matches, err := filepath.Glob(filepath.Join(dir, "*.sql"))
 	if err != nil {
@@ -43,7 +50,7 @@ func Lint(dir string) ([]string, error) {
 // so commented-out statements don't satisfy the lint's substring checks.
 func stripComments(src string) string {
 	var b strings.Builder
-	for _, line := range strings.Split(src, "\n") {
+	for line := range strings.SplitSeq(src, "\n") {
 		if i := strings.Index(line, "--"); i >= 0 {
 			line = line[:i]
 		}
