@@ -6,6 +6,19 @@ role separation remain deferred sub-parts of the same issue.
 
 **Date:** 2026-06-04
 
+> **Revision (2026-06-05):** After consulting the PostgREST documentation
+> ([Database Authorization](https://docs.postgrest.org/en/stable/explanations/db_authz.html)),
+> the implementation was changed from the originally-chosen **Approach B** (create as superuser,
+> then reassign ownership per-function via `ALTER FUNCTION … OWNER TO api_owner`, with a
+> load-bearing lint) to the idiomatic PostgreSQL **create-as-owner** pattern: `apply-functions`
+> wraps applied SQL in `SET ROLE api_owner; … RESET ROLE;`, so every function is owned by the
+> non-superuser `api_owner` *by construction*. This removes the per-function ownership boilerplate
+> from the `.sql` files and demotes the lint to advisory (`search_path` only — the one hazard a tool
+> cannot fix for the author). The sections below are updated to describe the adopted approach; the
+> original Approach-B rationale is retained under "Approach" for history. Ownership is no longer a
+> per-file concern — it is the provisioning model's job, which is the well-documented PG behavior we
+> should not be reinventing.
+
 ## Problem
 
 `apply-functions` connects to the database as the **superuser** (`POSTGRES_USER`) and runs
@@ -60,21 +73,24 @@ The lint is **warn-only**: it prints to stderr and still applies, matching the `
 
 ### 1. The `api_owner` role
 
-A powerless, login-less role, created only when the `api` capability is enabled (alongside
-`anon`/`authenticated`).
+A login-less, non-superuser role that owns the RPC functions, created only when the `api`
+capability is enabled (alongside `anon`/`authenticated`).
 
-- **Definition:** `CREATE ROLE api_owner NOLOGIN NOINHERIT;` — no table privileges by default.
-- **Ambient grant:** `GRANT USAGE ON SCHEMA public TO api_owner;` so its functions can resolve
-  objects in `public`. This is the *only* standing privilege; everything else a function needs is
-  granted explicitly by that function's own `.sql` file.
-- **Fresh install:** added to `rolesShScript` (`build/init/00-roles.sh`) and the USAGE grant to
+- **Definition:** `CREATE ROLE api_owner NOLOGIN NOINHERIT;`.
+- **Grants:** `GRANT USAGE, CREATE ON SCHEMA public TO api_owner` (USAGE to resolve objects, CREATE
+  so it can own functions created under `SET ROLE`), plus `GRANT SELECT, INSERT, UPDATE, DELETE` on
+  the enabled-capability app tables so its `SECURITY DEFINER` functions can do their privileged work.
+  This is the conventional PostgREST "schema owner" breadth — bounded to the app's public tables, and
+  **never directly reachable by an API caller** because `authenticator` cannot `SET ROLE` to
+  `api_owner` (it is granted only `anon`/`authenticated`).
+- **Fresh install:** role added to `rolesShScript` (`build/init/00-roles.sh`); grants in
   `writeAPIGrants` (`build/init/03-api-grants.sql`).
-- **Update (running install):** added idempotently to `EmitPreSQL`
-  (`DO $$ … IF NOT EXISTS … CREATE ROLE api_owner … $$;`) and to the `api` add block; teardown on
-  `api` removal folds `api_owner` into the existing `DROP OWNED BY …` line (which also drops any
-  functions it owns) followed by `DROP ROLE IF EXISTS api_owner;`.
-- Callers never `SET ROLE` to `api_owner`. Functions run *as* it via `SECURITY DEFINER`; the
-  superuser-connected `apply-functions` performs the `ALTER … OWNER`.
+- **Update (running install):** role added idempotently to `EmitPreSQL`; grants mirrored in the `api`
+  add block and per-cap loop of `EmitAddSQL`; teardown on `api` removal folds `api_owner` into the
+  existing `DROP OWNED BY …` line (dropping any functions it owns) followed by
+  `DROP ROLE IF EXISTS api_owner;`.
+- Callers never `SET ROLE` to `api_owner`. Functions run *as* it via `SECURITY DEFINER`; ownership is
+  established at creation time because `apply-functions` runs the file under `SET ROLE api_owner`.
 
 #### Role creation across install vs update
 
@@ -88,27 +104,27 @@ sequenceDiagram
         DB->>DB: CREATE ROLE anon / authenticated / authenticator
         DB->>DB: CREATE ROLE api_owner NOLOGIN NOINHERIT
         CLI->>DB: 03-api-grants.sql
-        DB->>DB: GRANT USAGE ON SCHEMA public TO api_owner
+        DB->>DB: GRANT USAGE, CREATE on public + DML on app tables TO api_owner
     else update (existing volume, enabling api)
         CLI->>DB: EmitPreSQL (idempotent)
         DB->>DB: IF NOT EXISTS CREATE ROLE api_owner
         CLI->>DB: api add block
-        DB->>DB: GRANT USAGE ON SCHEMA public TO api_owner
+        DB->>DB: GRANT USAGE, CREATE on public + DML on app tables TO api_owner
     end
 ```
 
 ### 2. The lint — `functions.Lint(dir) ([]string, error)`
 
-A best-effort, per-file string scan (no SQL parsing). For each `*.sql` in the directory:
+A best-effort, per-file string scan (no SQL parsing), now checking only the one hazard the tool
+cannot fix for the author. For each `*.sql` in the directory:
 
 - Contains `SECURITY DEFINER` (case-insensitive) **and no** `SET search_path` → warn: unpinned
   search_path on a definer function (injection vector).
-- Contains `SECURITY DEFINER` **and no** `OWNER TO` → warn: "will be owned by the superuser;
-  reassign with `ALTER FUNCTION … OWNER TO api_owner`".
 
-Returns a slice of `"<file>: <message>"` strings. `apply-functions` calls `Lint` before applying,
-prints any warnings to stderr, and proceeds regardless. Best-effort means it will not catch a
-definer in file A whose `OWNER TO` lives in file B — acceptable for a warn-only nudge.
+Ownership is **not** linted: `apply-functions` creates functions under `SET ROLE api_owner`, so a
+definer can never silently end up superuser-owned. Returns a slice of `"<file>: <message>"` strings.
+`apply-functions` calls `Lint` before applying, prints any warnings to stderr, and proceeds
+regardless (warn-only). SQL line comments are stripped before scanning.
 
 #### apply-functions flow with lint + ownership
 
@@ -122,40 +138,27 @@ sequenceDiagram
 
     User->>CLI: postgres4all apply-functions
     CLI->>Lint: scan *.sql
-    Lint-->>CLI: warnings (definer unpinned / unowned)
+    Lint-->>CLI: warnings (definer without pinned search_path)
     CLI-->>User: print warnings to stderr (non-fatal)
-    CLI->>DB: BEGIN, then CREATE FUNCTION submit_product (SECURITY DEFINER)
-    Note over DB: created owner = superuser (transiently)
-    CLI->>DB: IF EXISTS api_owner THEN ALTER FUNCTION OWNER TO api_owner
-    CLI->>DB: GRANT INSERT ON products, jobs TO api_owner
-    CLI->>DB: NOTIFY pgrst to reload, then COMMIT
+    CLI->>DB: SET ROLE api_owner (from P4A_FUNCTION_OWNER in .env)
+    CLI->>DB: CREATE FUNCTION submit_product (SECURITY DEFINER)
+    Note over DB: owned by api_owner by construction
+    CLI->>DB: GRANT EXECUTE ON submit_product TO anon, authenticated
+    CLI->>DB: RESET ROLE, then NOTIFY pgrst to reload
     DB-->>PostgREST: schema reload
     CLI-->>User: applied
 ```
 
 ### 3. The demo — `functions/example_submit.sql`
 
-After the function body, guarded so it applies cleanly on any install — the owner reassignment
-runs only when `api_owner` exists, and the table grant only when the target tables exist (i.e.
-`document_store` + `job_queue` are enabled). This preserves the file's existing "applies cleanly
-even on a non-`api` install" guarantee:
-
-```sql
-DO $$ BEGIN
-    IF EXISTS (SELECT FROM pg_roles WHERE rolname = 'api_owner') THEN
-        ALTER FUNCTION submit_product(text, jsonb) OWNER TO api_owner;
-        IF to_regclass('public.products') IS NOT NULL
-           AND to_regclass('public.jobs') IS NOT NULL THEN
-            GRANT INSERT ON products, jobs TO api_owner;
-        END IF;
-    END IF;
-END $$;
-```
-
-The leading comment is rewritten to explain that the function now runs as the scoped `api_owner`
-(holding only `INSERT` on `products`/`jobs`), not the superuser — so the "one controlled write"
-claim becomes literally true. During implementation, `examples/` is scanned for other definer
-functions; any that trip the lint get the same `OWNER TO api_owner` + minimal grant treatment.
+Because `apply-functions` runs the file under `SET ROLE api_owner`, the function is owned by
+`api_owner` automatically — the `.sql` file carries **no ownership machinery at all**. It is plain
+`CREATE OR REPLACE FUNCTION …` followed by the existing guarded `GRANT EXECUTE … TO anon,
+authenticated`. The leading comment explains that the function runs as the scoped `api_owner`
+(which holds DML on the app tables but no superuser rights), not the superuser. The `examples/`
+definer functions (`claim_job` PL/pgSQL + PL/Python) are likewise plain `CREATE` — their previously
+appended `ALTER … OWNER`/grant `DO`-blocks are removed. `api_owner`'s table privileges come from the
+generated grants (`03-api-grants.sql` / the update delta), not from each function file.
 
 ### Resulting (hardened) call flow
 
@@ -166,34 +169,38 @@ sequenceDiagram
     participant DB as Postgres
     participant Fn as submit_product()
 
-    Note over DB: owner = api_owner<br/>(USAGE on public + INSERT on products, jobs ONLY)
+    Note over DB: owner = api_owner<br/>(non-superuser: DML on app tables, no superuser rights)
     Client->>PostgREST: POST /rpc/submit_product (no JWT)
     PostgREST->>DB: SET ROLE anon, then call submit_product
     DB->>Fn: invoke (SECURITY DEFINER)
     Note over Fn: runs as OWNER = api_owner
-    Fn-->>DB: INSERT products, INSERT jobs (scoped)
-    Fn--xDB: anything beyond those grants is DENIED
+    Fn-->>DB: INSERT products, INSERT jobs (as api_owner)
+    Fn--xDB: superuser-only actions and other schemas are DENIED
     DB-->>PostgREST: result
     PostgREST-->>Client: 200 OK
 ```
 
 ## Migration
 
-Existing installs self-heal **once `api_owner` exists**. A function previously created
-superuser-owned is re-owned the next time `apply-functions` runs, because `ALTER … OWNER`
-re-executes idempotently and the superuser can re-own any function.
+Fresh installs need no migration. For an install provisioned *before* this feature, there are two
+considerations, because the `SET ROLE` model creates as `api_owner` rather than reassigning:
 
-Caveat: `api_owner` is created only on a fresh install or when `api` is toggled via `update` (which
-emits the idempotent `CREATE ROLE`). On an install provisioned *before* this feature, re-running
-`apply-functions` alone will not create the role — the `IF EXISTS api_owner` guard silently skips
-the re-own and the function stays superuser-owned (the lint still passes, since the file *does*
-contain `OWNER TO`). To migrate such an install, run an `update` (even a no-op capability change) so
-`api_owner` is created, then re-apply the functions. Fresh installs need no migration.
+1. **The role/grants must exist.** `api_owner` and its `CREATE`/DML grants are emitted on a fresh
+   install or when `api` is toggled via `update`. On a pre-feature install, run an `update` (even a
+   no-op capability change) so the role and grants are created before re-applying functions.
+2. **A pre-existing superuser-owned function blocks re-apply.** `apply-functions` now runs
+   `SET ROLE api_owner; CREATE OR REPLACE FUNCTION …`, and a role cannot `CREATE OR REPLACE` a
+   function it does not own — so re-applying over a function that is still superuser-owned **errors**
+   (`must be owner of function`) rather than silently leaving it. The operator drops the old function
+   as the superuser (`DROP FUNCTION …`) and re-applies; it is then created owned by `api_owner`. This
+   is a louder, safer failure mode than a silent skip.
 
 ## Testing
 
-- `functions.Lint` table test with good/bad `testdata` fixtures (definer pinned+owned, definer
-  unpinned, definer unowned, non-definer).
+- `functions.Lint` table test with `testdata` fixtures: only the unpinned-search_path cases warn;
+  a definer without `OWNER TO` no longer warns (ownership is structural via `SET ROLE`).
+- `functions.EmitSQL` is called with the owner argument; the `SET ROLE`/`RESET ROLE` wrapping is
+  exercised via the `apply-functions --dry-run` path.
 - Regenerated goldens for `00-roles.sh`, `03-api-grants.sql`, and the update
   `EmitPreSQL` / api-add / api-remove fixtures — **every diff line reviewed**, not blindly accepted.
 - A test asserting `api_owner` appears in the generated roles iff `api` is enabled.

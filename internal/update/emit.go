@@ -47,7 +47,7 @@ func EmitAddSQL(cfg *config.Config, add, installed []string) string {
 	if apiAdded {
 		sb.WriteString("CREATE EXTENSION IF NOT EXISTS pg_graphql;\n")
 		sb.WriteString("GRANT USAGE ON SCHEMA public TO anon, authenticated;\n")
-		sb.WriteString("GRANT USAGE ON SCHEMA public TO api_owner;\n")
+		sb.WriteString("GRANT USAGE, CREATE ON SCHEMA public TO api_owner;\n")
 
 		// Read-table grant for INSTALLED caps (not the ones being added).
 		var tables []string
@@ -64,6 +64,7 @@ func EmitAddSQL(cfg *config.Config, add, installed []string) string {
 		}
 		if len(tables) > 0 {
 			sb.WriteString("GRANT SELECT ON " + strings.Join(tables, ", ") + " TO anon, authenticated;\n")
+			sb.WriteString("GRANT SELECT, INSERT, UPDATE, DELETE ON " + strings.Join(tables, ", ") + " TO api_owner;\n")
 		}
 		if Contains(installed, "auth") {
 			sb.WriteString("GRANT SELECT, INSERT, UPDATE, DELETE ON notes TO authenticated;\n")
@@ -107,6 +108,7 @@ func EmitAddSQL(cfg *config.Config, add, installed []string) string {
 		if apiEff {
 			if tbl, ok := generate.ReadTableMap[c]; ok {
 				sb.WriteString("GRANT SELECT ON " + tbl + " TO anon, authenticated;\n")
+				sb.WriteString("GRANT SELECT, INSERT, UPDATE, DELETE ON " + tbl + " TO api_owner;\n")
 			}
 			if c == "auth" {
 				sb.WriteString("GRANT SELECT, INSERT, UPDATE, DELETE ON notes TO authenticated;\n")

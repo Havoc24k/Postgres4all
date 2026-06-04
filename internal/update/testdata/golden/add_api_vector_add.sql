@@ -1,7 +1,8 @@
 CREATE EXTENSION IF NOT EXISTS pg_graphql;
 GRANT USAGE ON SCHEMA public TO anon, authenticated;
-GRANT USAGE ON SCHEMA public TO api_owner;
+GRANT USAGE, CREATE ON SCHEMA public TO api_owner;
 GRANT SELECT ON products TO anon, authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON products TO api_owner;
 GRANT USAGE ON SCHEMA graphql TO anon, authenticated;
 GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA graphql TO anon, authenticated;
 CREATE EXTENSION IF NOT EXISTS vector;
@@ -21,5 +22,6 @@ INSERT INTO documents (owner_id, content, embedding) VALUES
     (2, 'car', '[0.90,0.10,0.00]');
 
 GRANT SELECT ON documents TO anon, authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON documents TO api_owner;
 INSERT INTO p4a_meta.capabilities (cap) VALUES ('vector') ON CONFLICT (cap) DO NOTHING;
 INSERT INTO p4a_meta.capabilities (cap) VALUES ('api') ON CONFLICT (cap) DO NOTHING;
