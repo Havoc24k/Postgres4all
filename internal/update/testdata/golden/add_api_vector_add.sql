@@ -1,5 +1,6 @@
 CREATE EXTENSION IF NOT EXISTS pg_graphql;
 GRANT USAGE ON SCHEMA public TO anon, authenticated;
+GRANT USAGE ON SCHEMA public TO api_owner;
 GRANT SELECT ON products TO anon, authenticated;
 GRANT USAGE ON SCHEMA graphql TO anon, authenticated;
 GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA graphql TO anon, authenticated;

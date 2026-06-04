@@ -28,6 +28,7 @@ func EmitPreSQL(authPw string) string {
 	sb.WriteString("DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='anon') THEN CREATE ROLE anon NOLOGIN; END IF; END $$;\n")
 	sb.WriteString("DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='authenticated') THEN CREATE ROLE authenticated NOLOGIN; END IF; END $$;\n")
 	sb.WriteString(fmt.Sprintf("DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='authenticator') THEN CREATE ROLE authenticator NOINHERIT LOGIN PASSWORD '%s'; END IF; END $$;\n", escaped))
+	sb.WriteString("DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='api_owner') THEN CREATE ROLE api_owner NOLOGIN NOINHERIT; END IF; END $$;\n")
 	sb.WriteString("GRANT anon, authenticated TO authenticator;\n")
 	return sb.String()
 }
@@ -46,6 +47,7 @@ func EmitAddSQL(cfg *config.Config, add, installed []string) string {
 	if apiAdded {
 		sb.WriteString("CREATE EXTENSION IF NOT EXISTS pg_graphql;\n")
 		sb.WriteString("GRANT USAGE ON SCHEMA public TO anon, authenticated;\n")
+		sb.WriteString("GRANT USAGE ON SCHEMA public TO api_owner;\n")
 
 		// Read-table grant for INSTALLED caps (not the ones being added).
 		var tables []string
@@ -156,10 +158,11 @@ func EmitRemoveSQL(_ *config.Config, remove []string) string {
 	// api teardown block (only when api is being removed).
 	if apiRemoved {
 		sb.WriteString("ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE SELECT ON TABLES FROM anon;\n")
-		sb.WriteString("DROP OWNED BY authenticator, anon, authenticated;\n")
+		sb.WriteString("DROP OWNED BY authenticator, anon, authenticated, api_owner;\n")
 		sb.WriteString("DROP ROLE IF EXISTS authenticator;\n")
 		sb.WriteString("DROP ROLE IF EXISTS authenticated;\n")
 		sb.WriteString("DROP ROLE IF EXISTS anon;\n")
+		sb.WriteString("DROP ROLE IF EXISTS api_owner;\n")
 		sb.WriteString("DROP EXTENSION IF EXISTS pg_graphql;\n")
 		sb.WriteString("DELETE FROM p4a_meta.capabilities WHERE cap = 'api';\n")
 	}

@@ -61,6 +61,13 @@ func checkGolden(t *testing.T, goldenName, got string) {
 	}
 }
 
+func TestPreSQLCreatesAPIOwner(t *testing.T) {
+	got := EmitPreSQL("pw")
+	if !strings.Contains(got, "CREATE ROLE api_owner NOLOGIN NOINHERIT") {
+		t.Errorf("EmitPreSQL must create api_owner; got:\n%s", got)
+	}
+}
+
 func TestEmit(t *testing.T) {
 	t.Run("add_vector_no_api", func(t *testing.T) {
 		cfg := cfgWithCaps("document_store", "vector")
