@@ -263,7 +263,12 @@ func writeAPIGrants(c *config.Config, outDir string) error {
 	var sb strings.Builder
 	sb.WriteString(header)
 	sb.WriteString("GRANT USAGE ON SCHEMA public TO anon, authenticated;\n")
-	sb.WriteString("GRANT USAGE ON SCHEMA public TO api_owner;\n")
+	// api_owner is the non-superuser role that owns SECURITY DEFINER RPCs (apply-functions
+	// creates them via SET ROLE api_owner). It needs USAGE+CREATE on the schema to own
+	// functions, and DML on the app tables so those functions can do their privileged work.
+	// It is NOT a PostgREST switch-target (authenticator cannot SET ROLE to it), so its
+	// table access is never directly reachable by an API caller.
+	sb.WriteString("GRANT USAGE, CREATE ON SCHEMA public TO api_owner;\n")
 
 	// Build read-tables list in canonical order (excluding api and auth, which have no read table).
 	var tables []string
@@ -279,6 +284,7 @@ func writeAPIGrants(c *config.Config, outDir string) error {
 	}
 	if len(tables) > 0 {
 		sb.WriteString("GRANT SELECT ON " + strings.Join(tables, ", ") + " TO anon, authenticated;\n")
+		sb.WriteString("GRANT SELECT, INSERT, UPDATE, DELETE ON " + strings.Join(tables, ", ") + " TO api_owner;\n")
 	}
 
 	if c.Enabled("auth") {

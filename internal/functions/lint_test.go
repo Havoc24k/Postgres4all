@@ -14,9 +14,9 @@ func TestLint(t *testing.T) {
 	}{
 		{"clean", 0, ""},
 		{"unpinned", 1, "search_path"},
-		{"unowned", 1, "OWNER TO"},
+		{"unowned", 0, ""}, // ownership is structural (SET ROLE), no longer linted
 		{"none", 0, ""},
-		{"both", 2, ""},
+		{"both", 1, "search_path"}, // only the unpinned search_path is flagged now
 	}
 	for _, tc := range cases {
 		t.Run(tc.dir, func(t *testing.T) {

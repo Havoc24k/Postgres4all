@@ -27,7 +27,11 @@ func newApplyFunctionsCmd() *cobra.Command {
 			for _, w := range warnings {
 				fmt.Fprintln(os.Stderr, "warning: "+w)
 			}
-			sql, n, err := functions.EmitSQL(dir)
+			// Create functions owned by the non-superuser api_owner role (recorded in
+			// build/.env as P4A_FUNCTION_OWNER when api is enabled). Empty on a non-api
+			// install -> no SET ROLE wrapping; functions are owned by the connecting role.
+			owner := dockerx.EnvValue(out, "P4A_FUNCTION_OWNER")
+			sql, n, err := functions.EmitSQL(dir, owner)
 			if err != nil {
 				return err
 			}

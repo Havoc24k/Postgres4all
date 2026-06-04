@@ -6,10 +6,11 @@
 -- which exist ONLY when api is enabled — so it is guarded with an IF EXISTS check, meaning this
 -- file applies cleanly even on a non-api install (the function is created; it just isn't granted).
 -- SECURITY DEFINER: this function performs privileged INSERTs, but anon/authenticated have only
--- SELECT on products/jobs. The trailing DO-block reassigns ownership to api_owner — a powerless
--- role granted ONLY INSERT on products/jobs — so an unprivileged caller runs exactly this one
--- controlled write as that scoped role, NOT as the superuser. search_path is pinned (a SECURITY
--- DEFINER safety requirement); pg_catalog is searched first implicitly.
+-- SELECT on products/jobs. apply-functions creates this function under `SET ROLE api_owner`, so it
+-- is owned by api_owner — a non-superuser role holding DML on the app tables but no superuser
+-- rights — and an unprivileged caller runs exactly this controlled write as that scoped role, NOT
+-- as the superuser. search_path is pinned (a SECURITY DEFINER safety requirement); pg_catalog is
+-- searched first implicitly.
 CREATE OR REPLACE FUNCTION submit_product(name text, attributes jsonb DEFAULT '{}'::jsonb)
 RETURNS jsonb
 LANGUAGE plpgsql
@@ -36,20 +37,5 @@ DO $$
 BEGIN
     IF EXISTS (SELECT FROM pg_roles WHERE rolname = 'anon') THEN
         GRANT EXECUTE ON FUNCTION submit_product(text, jsonb) TO anon, authenticated;
-    END IF;
-END $$;
-
--- Run the privileged INSERTs as a scoped, NON-superuser role rather than the superuser that
--- applied this file. api_owner exists only when `api` is enabled; the table grant is applied
--- only when the target tables exist (document_store + job_queue) so this file still applies
--- cleanly on any install.
-DO $$
-BEGIN
-    IF EXISTS (SELECT FROM pg_roles WHERE rolname = 'api_owner') THEN
-        ALTER FUNCTION submit_product(text, jsonb) OWNER TO api_owner;
-        IF to_regclass('public.products') IS NOT NULL
-           AND to_regclass('public.jobs') IS NOT NULL THEN
-            GRANT INSERT ON products, jobs TO api_owner;
-        END IF;
     END IF;
 END $$;

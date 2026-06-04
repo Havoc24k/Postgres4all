@@ -9,7 +9,7 @@ import (
 
 func TestEmitSQL_Empty(t *testing.T) {
 	dir := t.TempDir()
-	sql, n, err := EmitSQL(dir)
+	sql, n, err := EmitSQL(dir, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -27,7 +27,7 @@ func TestEmitSQL_SortedConcat(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "00_a.sql"), []byte("-- A\nSELECT 1;\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	sql, n, err := EmitSQL(dir)
+	sql, n, err := EmitSQL(dir, "")
 	if err != nil {
 		t.Fatal(err)
 	}
