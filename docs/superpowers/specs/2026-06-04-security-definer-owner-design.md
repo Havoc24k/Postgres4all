@@ -31,7 +31,7 @@ sequenceDiagram
 
     Note over DB: owner = postgres (SUPERUSER)
     Client->>PostgREST: POST /rpc/submit_product (no JWT)
-    PostgREST->>DB: SET ROLE anon; SELECT submit_product(...)
+    PostgREST->>DB: SET ROLE anon, then call submit_product
     DB->>Fn: invoke (SECURITY DEFINER)
     Note over Fn: runs as OWNER = superuser
     Fn-->>DB: INSERT products, INSERT jobs (as SUPERUSER)
@@ -124,11 +124,11 @@ sequenceDiagram
     CLI->>Lint: scan *.sql
     Lint-->>CLI: warnings (definer unpinned / unowned)
     CLI-->>User: print warnings to stderr (non-fatal)
-    CLI->>DB: BEGIN; CREATE FUNCTION submit_product (SECURITY DEFINER)
+    CLI->>DB: BEGIN, then CREATE FUNCTION submit_product (SECURITY DEFINER)
     Note over DB: created owner = superuser (transiently)
-    CLI->>DB: IF EXISTS api_owner THEN ALTER FUNCTION ... OWNER TO api_owner
+    CLI->>DB: IF EXISTS api_owner THEN ALTER FUNCTION OWNER TO api_owner
     CLI->>DB: GRANT INSERT ON products, jobs TO api_owner
-    CLI->>DB: NOTIFY pgrst, 'reload schema'; COMMIT
+    CLI->>DB: NOTIFY pgrst to reload, then COMMIT
     DB-->>PostgREST: schema reload
     CLI-->>User: applied
 ```
@@ -168,7 +168,7 @@ sequenceDiagram
 
     Note over DB: owner = api_owner<br/>(USAGE on public + INSERT on products, jobs ONLY)
     Client->>PostgREST: POST /rpc/submit_product (no JWT)
-    PostgREST->>DB: SET ROLE anon; SELECT submit_product(...)
+    PostgREST->>DB: SET ROLE anon, then call submit_product
     DB->>Fn: invoke (SECURITY DEFINER)
     Note over Fn: runs as OWNER = api_owner
     Fn-->>DB: INSERT products, INSERT jobs (scoped)
