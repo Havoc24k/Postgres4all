@@ -16,6 +16,7 @@ func TestLint(t *testing.T) {
 		{"unpinned", 1, "search_path"},
 		{"unowned", 1, "OWNER TO"},
 		{"none", 0, ""},
+		{"both", 2, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.dir, func(t *testing.T) {

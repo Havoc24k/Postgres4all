@@ -11,6 +11,8 @@ import (
 // warnings (best-effort, per file; no SQL parsing). Each warning is "<file>: <message>".
 // A definer function is flagged when it lacks a pinned `SET search_path` (injection
 // risk) or an `OWNER TO` reassignment (would be owned by the superuser).
+// SQL line comments (-- to end of line) are stripped before scanning so that
+// commented-out statements never satisfy a check.
 func Lint(dir string) ([]string, error) {
 	matches, err := filepath.Glob(filepath.Join(dir, "*.sql"))
 	if err != nil {
@@ -23,16 +25,30 @@ func Lint(dir string) ([]string, error) {
 		if err != nil {
 			return nil, err
 		}
-		lower := strings.ToLower(string(b))
-		if !strings.Contains(lower, "security definer") {
+		scan := stripComments(string(b))
+		if !strings.Contains(scan, "security definer") {
 			continue
 		}
-		if !strings.Contains(lower, "set search_path") {
+		if !strings.Contains(scan, "set search_path") {
 			warnings = append(warnings, f+": SECURITY DEFINER function without a pinned 'SET search_path' (search-path injection risk)")
 		}
-		if !strings.Contains(lower, "owner to") {
+		if !strings.Contains(scan, "owner to") {
 			warnings = append(warnings, f+": SECURITY DEFINER function without 'ALTER FUNCTION ... OWNER TO api_owner' — it would be owned by the superuser (privilege-escalation risk)")
 		}
 	}
 	return warnings, nil
+}
+
+// stripComments lowercases src and removes SQL line comments (-- to end of line)
+// so commented-out statements don't satisfy the lint's substring checks.
+func stripComments(src string) string {
+	var b strings.Builder
+	for _, line := range strings.Split(src, "\n") {
+		if i := strings.Index(line, "--"); i >= 0 {
+			line = line[:i]
+		}
+		b.WriteString(line)
+		b.WriteByte('\n')
+	}
+	return strings.ToLower(b.String())
 }
