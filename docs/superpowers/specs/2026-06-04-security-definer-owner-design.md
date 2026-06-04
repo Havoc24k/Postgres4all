@@ -179,9 +179,16 @@ sequenceDiagram
 
 ## Migration
 
-Existing installs self-heal. A function previously created superuser-owned is re-owned the next
-time `apply-functions` runs, because `ALTER … OWNER` re-executes idempotently and the superuser can
-re-own any function. No manual migration step. Noted in the commit message.
+Existing installs self-heal **once `api_owner` exists**. A function previously created
+superuser-owned is re-owned the next time `apply-functions` runs, because `ALTER … OWNER`
+re-executes idempotently and the superuser can re-own any function.
+
+Caveat: `api_owner` is created only on a fresh install or when `api` is toggled via `update` (which
+emits the idempotent `CREATE ROLE`). On an install provisioned *before* this feature, re-running
+`apply-functions` alone will not create the role — the `IF EXISTS api_owner` guard silently skips
+the re-own and the function stays superuser-owned (the lint still passes, since the file *does*
+contain `OWNER TO`). To migrate such an install, run an `update` (even a no-op capability change) so
+`api_owner` is created, then re-apply the functions. Fresh installs need no migration.
 
 ## Testing
 
