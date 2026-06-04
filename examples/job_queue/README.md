@@ -31,8 +31,11 @@ Build and start the stack (see [../README.md](../README.md) for full setup):
 ## Load the example's functions
 
 The dequeue is a `SECURITY DEFINER` function — it lets an unprivileged API caller run exactly one
-controlled write. Apply this folder's functions with the CLI (it reloads PostgREST's schema cache;
-give it a second before calling):
+controlled write (the `UPDATE … status = 'processing'`). Note the files are plain `CREATE OR REPLACE
+FUNCTION` with no ownership boilerplate: `apply-functions` creates them under `SET ROLE api_owner`, a
+non-superuser role, so the definer runs scoped to the app tables, **not** as the superuser. (See
+[../../functions/README.md](../../functions/README.md) for the ownership model.) Apply this folder's
+functions with the CLI (it reloads PostgREST's schema cache; give it a second before calling):
 
 ```bash
 ./postgres4all apply-functions examples/job_queue

@@ -64,11 +64,15 @@ capabilities without losing data; a `down -v` + `install` only to start over.
   Tables are always granted AFTER they're created; removing `api` REVOKEs the superuser-owned default-priv
   ACL before dropping `anon`; secrets are reused from `build/.env`. The delta SQL is golden-tested
   byte-for-byte (the goldens were captured from the now-retired bash and remain the oracle).
-- **`functions`** — `EmitSQL(dir)` concatenates `functions/*.sql` (sorted) + `NOTIFY pgrst, 'reload schema'`.
+- **`functions`** — `EmitSQL(dir, owner)` concatenates `functions/*.sql` (sorted) + `NOTIFY pgrst, 'reload schema'`,
+  wrapping the batch in `SET ROLE <owner>; … RESET ROLE;` when `owner` is non-empty.
   `apply-functions [dir]` (in `cmd/`) applies a directory of `*.sql` (default `functions/`; a positional
   arg points it at any folder, e.g. `examples/vector`) in one transaction to a running install and reloads PostgREST.
-  A function doing privileged writes for unprivileged callers must be `SECURITY DEFINER` (see
-  `functions/example_submit.sql`).
+  A function doing privileged writes for unprivileged callers must be `SECURITY DEFINER` with a pinned
+  `search_path` (see `functions/example_submit.sql`). **Ownership is structural, not per-file:**
+  `apply-functions` runs the batch under `SET ROLE api_owner` (read from `P4A_FUNCTION_OWNER` in `build/.env`),
+  so definer functions are owned by the non-superuser `api_owner` by construction — files stay plain `CREATE`,
+  no `ALTER … OWNER`. `functions.Lint` is advisory-only and warns just on a missing `SET search_path`.
 - **`dockerx`** — `os/exec` wrappers: `Compose{Dir, DBService, PostgRESTService}` (service names empty →
   `db`/`postgrest`) with `Run`/`ApplySQL`/`QueryInstalled`/`VolumeName`/`WaitHealthy`/`BuildUp`/`UpDB`, and
   `Preflight`/`VolumeExists`/`EnvValue`. The generated stack records its service names in `build/.env`
@@ -89,9 +93,9 @@ Two containers (defined in the generated `build/docker-compose.yml`):
 - **postgrest** — `postgrest/postgrest:v12.2.3`. Connects as the `authenticator` login role and switches to `anon` (no JWT) or `authenticated` (valid JWT) per request. Only present when the `api` capability is enabled.
 
 **The PostgREST security model** spans three generated init files and is the trickiest part:
-- `build/init/00-roles.sh` creates `authenticator` (NOINHERIT LOGIN) which can `SET ROLE` to `anon` or `authenticated`.
+- `build/init/00-roles.sh` creates `authenticator` (NOINHERIT LOGIN) which can `SET ROLE` to `anon` or `authenticated`. It also creates `api_owner` (NOLOGIN NOINHERIT), the non-superuser role that owns SECURITY DEFINER RPCs — `authenticator` is **not** granted `api_owner`, so no API request can switch into it.
 - `build/init/02-schema.sql` enables row-level security on `notes` with a policy keying `owner` to the JWT `sub` claim (`current_setting('request.jwt.claims', true)::json ->> 'sub'`).
-- `build/init/03-api-grants.sql` grants `anon` read on the public demo tables and `authenticated` full CRUD on `notes` (RLS then scopes it per user).
+- `build/init/03-api-grants.sql` grants `anon` read on the public demo tables and `authenticated` full CRUD on `notes` (RLS then scopes it per user). It also grants `api_owner` `USAGE, CREATE` on `public` + DML on the enabled-capability tables, so `apply-functions` can create definer functions under `SET ROLE api_owner` that own their privileged writes without being superuser (RLS on `notes` is therefore not bypassed — `api_owner` has no grant on it).
 - A request authenticates by sending a JWT (HMAC-signed with `JWT_SECRET`) carrying `{"role":"authenticated","sub":"<user>"}` as a Bearer token.
 
 ## Versioning

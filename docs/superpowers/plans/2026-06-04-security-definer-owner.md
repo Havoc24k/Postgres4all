@@ -1,5 +1,11 @@
 # Scoped SECURITY DEFINER Owner + apply-functions Lint — Implementation Plan
 
+> **⚠️ Superseded (2026-06-05):** this plan executed the per-function `ALTER FUNCTION … OWNER TO
+> api_owner` + load-bearing-lint approach. It was subsequently replaced by the idiomatic PG
+> **create-as-owner** model (`apply-functions` runs `SET ROLE api_owner`), per the revision note in
+> `docs/superpowers/specs/2026-06-04-security-definer-owner-design.md`. Kept for history; the spec and
+> the code are the source of truth.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Give `SECURITY DEFINER` functions a powerless `api_owner` role instead of running as the superuser, and warn (in `apply-functions`) when a definer function would be left superuser-owned or has an unpinned search_path.

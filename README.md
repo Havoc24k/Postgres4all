@@ -198,7 +198,7 @@ The shipped `functions/example_submit.sql` stores a document **and** enqueues a 
 CREATE OR REPLACE FUNCTION submit_product(name text, attributes jsonb DEFAULT '{}')
 RETURNS jsonb
 LANGUAGE plpgsql
-SECURITY DEFINER SET search_path = public, pg_temp   -- run privileged so anon callers can write
+SECURITY DEFINER SET search_path = public, pg_temp   -- runs as api_owner (scoped), so anon can write
 AS $$
 DECLARE new_id bigint;
 BEGIN
@@ -233,8 +233,20 @@ the same way.
 - A function doing privileged writes for unprivileged callers (`anon`/`authenticated`, who only have
   `SELECT`) must be `SECURITY DEFINER` with a pinned `search_path`, as above — otherwise the caller
   gets `permission denied`.
+- **Ownership — you don't manage it.** A `SECURITY DEFINER` function runs with the privileges of its
+  *owner*, so the owner must not be the superuser. `apply-functions` handles this for you: it runs
+  your SQL under `SET ROLE api_owner`, a non-superuser role that holds DML on the app tables but no
+  superuser rights. So your function files stay plain `CREATE OR REPLACE FUNCTION …` — no `ALTER …
+  OWNER` needed — and the definer runs as that scoped role, never as the superuser. Row-level
+  security (e.g. on `notes`) is therefore **not** bypassed. (`api_owner` exists only when `api` is
+  enabled, recorded as `P4A_FUNCTION_OWNER` in `build/.env`; on a non-`api` install there's no
+  PostgREST to reach RPCs, so functions are created by the connecting role as before.)
+- The only thing the tool can't do for you is pin `search_path` — so `apply-functions` prints a
+  warning for any `SECURITY DEFINER` function missing `SET search_path` (advisory, non-blocking).
 - Apply is additive (`CREATE OR REPLACE`); deleting a `.sql` file does **not** drop its function —
-  run `DROP FUNCTION` yourself.
+  run `DROP FUNCTION` yourself. Note: because functions are now created *as* `api_owner`, replacing a
+  function that an older install created as the superuser fails with `must be owner of function` —
+  `DROP FUNCTION` it once as the superuser, then re-apply.
 - Languages are install-time: enabling one on a running install needs a fresh build, not `update`.
 
 </details>
