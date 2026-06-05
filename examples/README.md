@@ -69,7 +69,7 @@ You'll also want `curl` and `jq` on your PATH to call the API and pretty-print t
 | [`dashboards/`](dashboards/README.md) | `dashboards` + `timeseries` + `api` | `GET /event_daily` (rollup) + `/rpc` in both languages |
 | [`api/`](api/README.md) | `document_store` + `api` | REST endpoints + GraphQL resolved by `/rpc` in both languages |
 | [`auth/`](auth/README.md) | `auth` + `api` | JWT + row-level security; isolation holds through an `/rpc` in both languages |
-| [`everything/`](everything/README.md) | **all nine** + `api` | a guided tour: one user session across every capability, adding a `submit_order` `/rpc` + its own `orders` table |
+| [`everything/`](everything/README.md) | **all nine** + `api` | a guided tour: one user session across every capability — self-service `register`/`login` (issues a JWT), a `submit_order` `/rpc`, and its own `orders`/`users` tables |
 
 All examples need `"languages": { "plpython": true, "allow_untrusted": true }` so the PL/Python
 halves can run.
