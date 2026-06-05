@@ -4,6 +4,9 @@
     build: .
     image: {{.Image}}
     restart: unless-stopped
+{{- if .API}}
+    command: ["postgres", "-c", "shared_preload_libraries=safeupdate"]
+{{- end}}
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}

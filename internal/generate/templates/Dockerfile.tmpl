@@ -5,6 +5,9 @@ ARG PG_MAJOR={{.PGMajor}}
 {{- if .Vector}}
 RUN apt-get update && apt-get install -y --no-install-recommends postgresql-{{.PGMajor}}-pgvector ca-certificates wget && rm -rf /var/lib/apt/lists/*
 {{- end}}
+{{- if .API}}
+RUN set -eux; apt-get update; apt-get install -y --no-install-recommends pgxnclient build-essential postgresql-server-dev-{{.PGMajor}}; pgxn install safeupdate; apt-get purge -y pgxnclient build-essential postgresql-server-dev-{{.PGMajor}}; apt-get autoremove -y; rm -rf /var/lib/apt/lists/*
+{{- end}}
 {{- if .LangPkgs}}
 RUN apt-get update && apt-get install -y --no-install-recommends{{range .LangPkgs}} {{.}}{{end}} && rm -rf /var/lib/apt/lists/*
 {{- end}}

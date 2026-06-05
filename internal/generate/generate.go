@@ -134,6 +134,7 @@ func renderDockerfile(c *config.Config, outDir string) error {
 	type dockerfileModel struct {
 		GIS            bool
 		Vector         bool
+		API            bool
 		PGMajor        string
 		PostGISVersion string
 		LangPkgs       []string
@@ -150,6 +151,7 @@ func renderDockerfile(c *config.Config, outDir string) error {
 	m := dockerfileModel{
 		GIS:            c.Enabled("gis"),
 		Vector:         c.Enabled("vector"),
+		API:            c.Enabled("api"),
 		PGMajor:        PGMajor,
 		PostGISVersion: PostGISVersion,
 		LangPkgs:       langPkgs,

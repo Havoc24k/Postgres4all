@@ -3,6 +3,7 @@ services:
     build: .
     image: postgres4all:generated
     restart: unless-stopped
+    command: ["postgres", "-c", "shared_preload_libraries=safeupdate"]
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
