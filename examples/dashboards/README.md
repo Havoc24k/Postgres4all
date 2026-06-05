@@ -80,3 +80,21 @@ curl -s -X POST "http://localhost:3000/rpc/daily_rollup_plpgsql" -H 'Content-Typ
 ```
 
 The PL/Python variant (`/rpc/daily_rollup_plpython`) returns the identical result.
+
+## Keeping the rollup fresh
+
+`event_daily` is a **materialized** view — a point-in-time snapshot. New events written after the last
+refresh don't appear until you refresh it, and *how* you do that is a workload decision this demo
+deliberately leaves to you (the matview is the starting point, not a policy):
+
+- **Scheduled `REFRESH`** — a cron job or [`pg_cron`](https://github.com/citusdata/pg_cron) running
+  `REFRESH MATERIALIZED VIEW CONCURRENTLY event_daily;` every few minutes. Closest to the warehouse
+  model: cheap writes, eventually-consistent reads. (The unique index `event_daily_pk` already exists,
+  so `CONCURRENTLY` works — refreshes don't block reads.) `REFRESH` requires ownership, so run it as a
+  superuser / the view's owner, not over the API.
+- **Trigger-maintained summary table** — if you want an always-current dashboard, replace the matview
+  with a real `event_daily` table and an `AFTER INSERT` trigger on `events` that does an incremental
+  `INSERT … ON CONFLICT (day, kind) DO UPDATE SET n = n + 1`. O(1) per event, no refresh. Trades a
+  little write-path cost for real-time reads.
+
+Pick the one that fits your freshness-vs-write-cost needs.

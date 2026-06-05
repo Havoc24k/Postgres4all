@@ -267,18 +267,16 @@ curl -s "http://localhost:3000/event_daily?select=day,kind,n&order=day.desc" | j
 [{"day":"2026-06-05T00:00:00+00:00","kind":"purchase","n":1},{"day":"2026-06-01T00:00:00+00:00","kind":"click","n":1000}]
 ```
 
-The OLTP write (step 7) and this "warehouse" read are the same Postgres. **But** the purchase only
-appears once the matview is *refreshed* — and refreshing requires being its owner. Run it as a
-superuser:
+The OLTP write (step 7) and this "warehouse" read are the same Postgres. **But** a matview is a
+snapshot — the purchase only shows up after a refresh:
 
 ```bash
-docker exec build-db-1 psql -U postgres -d app -c 'REFRESH MATERIALIZED VIEW event_daily;'
+docker exec build-db-1 psql -U postgres -d app -c 'REFRESH MATERIALIZED VIEW CONCURRENTLY event_daily;'
 ```
 
-> ⚠️ There is currently **no API path to refresh** this matview: it's owned by `postgres`, and a
-> `SECURITY DEFINER` refresh RPC owned by `api_owner` is denied (`must be owner of materialized view`).
-> Tracked in issue `postgres4all-g5f`. Until then, treat the rollup as refreshed out-of-band (a cron
-> `REFRESH`, which is the normal pattern for a warehouse rollup anyway).
+> ℹ️ Refreshing is an **ops decision the demo leaves to you**, not something the API does: a scheduled
+> `REFRESH` (cron / `pg_cron`), or swap the matview for a trigger-maintained summary table for an
+> always-current dashboard. See [dashboards → Keeping the rollup fresh](../dashboards/README.md#keeping-the-rollup-fresh).
 
 ## What just happened
 
