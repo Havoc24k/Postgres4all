@@ -68,6 +68,7 @@ You'll also want `curl` and `jq` on your PATH to call the API and pretty-print t
 | [`timeseries/`](timeseries/README.md) | `timeseries` + `api` | `GET` time window + windowed-count `/rpc` in both languages |
 | [`dashboards/`](dashboards/README.md) | `dashboards` + `timeseries` + `api` | `GET /event_daily` (rollup) + `/rpc` in both languages |
 | [`auth/`](auth/README.md) | `auth` + `api` | JWT + row-level security; isolation holds through an `/rpc` in both languages |
+| [`htmx/`](htmx/README.md) | `api` | PostgREST serving **HTML** (the `"text/html"` domain) — an htmx todo list in both languages |
 | [`everything/`](everything/README.md) | **all nine** + `api` | a guided tour: one user session across every capability, adding a `submit_order` `/rpc` + its own `orders` table |
 
 All examples need `"languages": { "plpython": true, "allow_untrusted": true }` so the PL/Python
