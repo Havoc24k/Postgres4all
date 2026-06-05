@@ -29,7 +29,7 @@ What you get instead of eight systems:
 - **One thing to operate** — one database to back up, secure, monitor, and scale.
 - **Transactional consistency for free** — storing a document *and* enqueuing a job is a single
   transaction, not a two-phase dance across services.
-- **No glue code** — PostgREST turns your schema (and your own SQL functions) into a REST/GraphQL API
+- **No glue code** — PostgREST turns your schema (and your own SQL functions) into a REST API
   with no application tier in between.
 
 ### What each capability replaces
@@ -43,7 +43,7 @@ What you get instead of eight systems:
 | 🗺️ | `gis` | GIS systems | PostGIS + GiST | **`postgis`** |
 | 📈 | `timeseries` | time-series DB | partitioning + BRIN | core |
 | 📊 | `dashboards` | Snowflake | materialized views | core |
-| 🔌 | `api` | Node/Python middleware | PostgREST + `pg_graphql` | **`pg_graphql`** |
+| 🔌 | `api` | Node/Python middleware | PostgREST (REST + HTML) | core |
 | 🔐 | `auth` | hand-written auth | row-level security | core |
 
 The **bold** extensions are the only ones that add weight to the image, and they're installed *only*
@@ -90,7 +90,7 @@ SELECT name FROM places ORDER BY geom <-> ST_SetSRID(ST_MakePoint(-122.41,37.78)
 SELECT * FROM event_daily ORDER BY day;
 ```
 
-And with `api` enabled, the schema is a REST + GraphQL API for free:
+And with `api` enabled, the schema is a REST API for free:
 
 ```bash
 curl http://localhost:3000/products                     # anonymous read
@@ -265,7 +265,7 @@ simpler choice.**
 
 - **How it works** — `postgres4all` (Go, under `cmd/` + `internal/`) generates `build/` from your
   `config.json`, then drives `docker compose`.
-- **Versions** — Postgres 17, PostGIS 3.5, pgvector, pg_graphql 1.5.11, PostgREST 12.2.3 (pinned in
+- **Versions** — Postgres 17, PostGIS 3.5, pgvector, PostgREST 12.2.3 (pinned in
   `internal/generate/generate.go`). Builds for amd64 and arm64.
 - **Security** — demo grants are permissive (anon reads everything); tighten before real use.
 - **Tests** — `go test ./...`.

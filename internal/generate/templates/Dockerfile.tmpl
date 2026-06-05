@@ -5,12 +5,6 @@ ARG PG_MAJOR={{.PGMajor}}
 {{- if .Vector}}
 RUN apt-get update && apt-get install -y --no-install-recommends postgresql-{{.PGMajor}}-pgvector ca-certificates wget && rm -rf /var/lib/apt/lists/*
 {{- end}}
-{{- if .API}}
-{{- if not .Vector}}
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates wget && rm -rf /var/lib/apt/lists/*
-{{- end}}
-RUN set -eux; arch="$(dpkg --print-architecture)"; url="https://github.com/supabase/pg_graphql/releases/download/v{{.PgGraphQL}}/pg_graphql-v{{.PgGraphQL}}-pg{{.PGMajor}}-${arch}-linux-gnu.deb"; wget -q -O /tmp/pg_graphql.deb "$url"; apt-get update; apt-get install -y --no-install-recommends /tmp/pg_graphql.deb; rm -f /tmp/pg_graphql.deb; rm -rf /var/lib/apt/lists/*
-{{- end}}
 {{- if .LangPkgs}}
 RUN apt-get update && apt-get install -y --no-install-recommends{{range .LangPkgs}} {{.}}{{end}} && rm -rf /var/lib/apt/lists/*
 {{- end}}

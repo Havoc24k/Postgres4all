@@ -43,9 +43,8 @@ func EmitAddSQL(cfg *config.Config, add, installed []string) string {
 
 	var sb strings.Builder
 
-	// api block: pg_graphql extension + grants over the already-installed tables.
+	// api block: schema/table grants over the already-installed tables.
 	if apiAdded {
-		sb.WriteString("CREATE EXTENSION IF NOT EXISTS pg_graphql;\n")
 		sb.WriteString("GRANT USAGE ON SCHEMA public TO anon, authenticated;\n")
 		sb.WriteString("GRANT USAGE, CREATE ON SCHEMA public TO api_owner;\n")
 
@@ -70,8 +69,6 @@ func EmitAddSQL(cfg *config.Config, add, installed []string) string {
 			sb.WriteString("GRANT SELECT, INSERT, UPDATE, DELETE ON notes TO authenticated;\n")
 		}
 
-		sb.WriteString("GRANT USAGE ON SCHEMA graphql TO anon, authenticated;\n")
-		sb.WriteString("GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA graphql TO anon, authenticated;\n")
 		if cfg.Security.AnonFutureTables {
 			sb.WriteString("ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO anon;\n")
 		}
@@ -165,7 +162,6 @@ func EmitRemoveSQL(_ *config.Config, remove []string) string {
 		sb.WriteString("DROP ROLE IF EXISTS authenticated;\n")
 		sb.WriteString("DROP ROLE IF EXISTS anon;\n")
 		sb.WriteString("DROP ROLE IF EXISTS api_owner;\n")
-		sb.WriteString("DROP EXTENSION IF EXISTS pg_graphql;\n")
 		sb.WriteString("DELETE FROM p4a_meta.capabilities WHERE cap = 'api';\n")
 	}
 
