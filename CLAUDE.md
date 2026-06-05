@@ -64,15 +64,19 @@ capabilities without losing data; a `down -v` + `install` only to start over.
   Tables are always granted AFTER they're created; removing `api` REVOKEs the superuser-owned default-priv
   ACL before dropping `anon`; secrets are reused from `build/.env`. The delta SQL is golden-tested
   byte-for-byte (the goldens were captured from the now-retired bash and remain the oracle).
-- **`functions`** — `EmitSQL(dir, owner)` concatenates `functions/*.sql` (sorted) + `NOTIFY pgrst, 'reload schema'`,
-  wrapping the batch in `SET ROLE <owner>; … RESET ROLE;` when `owner` is non-empty.
+- **`functions`** — `EmitSQL(dir, owner)` concatenates `functions/*.sql` (sorted) + `NOTIFY pgrst, 'reload schema'`.
+  When `owner` is non-empty it is **language-aware**: TRUSTED files (plpgsql/sql/plain DDL) are wrapped in
+  `SET ROLE <owner>; … RESET ROLE;` (owned by `<owner>` directly), but UNTRUSTED-language files
+  (`plpython3u`/`plperlu` — which only a superuser may `CREATE`) are emitted after `RESET ROLE` and then
+  reassigned via a `pg_proc`-snapshot `DO` block that `ALTER FUNCTION … OWNER TO <owner>` for every
+  function the batch newly created. Net: every function ends up `<owner>`-owned regardless of language.
   `apply-functions [dir]` (in `cmd/`) applies a directory of `*.sql` (default `functions/`; a positional
   arg points it at any folder, e.g. `examples/vector`) in one transaction to a running install and reloads PostgREST.
   A function doing privileged writes for unprivileged callers must be `SECURITY DEFINER` with a pinned
-  `search_path` (see `functions/example_submit.sql`). **Ownership is structural, not per-file:**
-  `apply-functions` runs the batch under `SET ROLE api_owner` (read from `P4A_FUNCTION_OWNER` in `build/.env`),
-  so definer functions are owned by the non-superuser `api_owner` by construction — files stay plain `CREATE`,
-  no `ALTER … OWNER`. `functions.Lint` is advisory-only and warns just on a missing `SET search_path`.
+  `search_path` (see `functions/example_submit.sql`). **Ownership is structural, not per-file:** example
+  files stay plain `CREATE` (no hand-written `ALTER … OWNER`); `EmitSQL` makes `api_owner` (read from
+  `P4A_FUNCTION_OWNER` in `build/.env`) the owner by construction. `functions.Lint` is advisory-only and
+  warns just on a missing `SET search_path`.
 - **`dockerx`** — `os/exec` wrappers: `Compose{Dir, DBService, PostgRESTService}` (service names empty →
   `db`/`postgrest`) with `Run`/`ApplySQL`/`QueryInstalled`/`VolumeName`/`WaitHealthy`/`BuildUp`/`UpDB`, and
   `Preflight`/`VolumeExists`/`EnvValue`. The generated stack records its service names in `build/.env`

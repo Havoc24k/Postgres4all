@@ -1,7 +1,8 @@
 # Examples
 
 One example per capability — each one driving the **HTTP API** (PostgREST), and each one showing its
-business logic in **both PL/pgSQL and PL/Python**.
+business logic in **both PL/pgSQL and PL/Python**. Plus [`everything/`](everything/README.md), a
+guided tour that strings all nine together into a single user session.
 
 The point of the project is that Postgres gives you these capabilities *and* an API for free, so the
 examples talk to `http://localhost:3000`, not `psql`. Where a capability is a plain query, that's a
@@ -68,6 +69,7 @@ You'll also want `curl` and `jq` on your PATH to call the API and pretty-print t
 | [`dashboards/`](dashboards/README.md) | `dashboards` + `timeseries` + `api` | `GET /event_daily` (rollup) + `/rpc` in both languages |
 | [`api/`](api/README.md) | `document_store` + `api` | REST endpoints + GraphQL resolved by `/rpc` in both languages |
 | [`auth/`](auth/README.md) | `auth` + `api` | JWT + row-level security; isolation holds through an `/rpc` in both languages |
+| [`everything/`](everything/README.md) | **all nine** + `api` | a guided tour: one user session across every capability, adding a `submit_order` `/rpc` + its own `orders` table |
 
 All examples need `"languages": { "plpython": true, "allow_untrusted": true }` so the PL/Python
 halves can run.
