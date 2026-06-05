@@ -9,7 +9,7 @@ step is an HTTP call against PostgREST (`http://localhost:3000`) — there is no
 
 | # | Step | Capability | Replaces |
 |---|------|-----------|----------|
-| 1 | **Alice registers + logs in** (`register`/`login`) | `auth` | an auth service (signup, password storage, token issuance) |
+| 1 | Mint Alice a token | `auth` | an auth service |
 | 2 | Find places near her | `gis` | PostGIS stack |
 | 3 | Filter products by attributes | `document_store` | MongoDB |
 | 4 | Typo-tolerant article search | `search` | Elasticsearch |
@@ -55,28 +55,6 @@ deliberately. Languages are installed at build time — enable them before `inst
 
 You'll also want `curl` and `jq` on your PATH.
 
-## Enable self-service auth (one-time)
-
-Step 1 lets Alice **sign up and log in** over HTTP instead of using the `mint-token` CLI. Two one-time
-operator steps make that possible (they're admin/superuser concerns, like tightening grants — the demo
-leaves them explicit rather than baking auth-with-passwords into the tool). Do this **before** loading
-the functions below — the `sign()` helper is a SQL function whose body references `pgcrypto`'s `hmac()`,
-so the extension must exist when it's created:
-
-```bash
-# 1. pgcrypto: bcrypt password hashing (crypt/gen_salt) + hmac() for signing tokens
-docker exec build-db-1 psql -U postgres -d app -c 'CREATE EXTENSION IF NOT EXISTS pgcrypto;'
-
-# 2. Make the JWT secret reachable in-DB so login() can sign tokens PostgREST will accept,
-#    then restart PostgREST so its connection pool picks up the new database setting.
-SECRET=$(grep '^JWT_SECRET=' build/.env | cut -d= -f2)
-docker exec build-db-1 psql -U postgres -d app -c "ALTER DATABASE app SET \"app.jwt_secret\" = '$SECRET';"
-docker compose -f build/docker-compose.yml restart postgrest
-```
-
-`login` signs with this secret; PostgREST verifies every token against the very same `JWT_SECRET` — so
-a token Alice logs in to get is indistinguishable from one `mint-token` produces.
-
 ## Load the functions
 
 This tour **reuses** the per-capability examples' `/rpc` functions and adds only its own
@@ -89,7 +67,7 @@ one creates the `orders` table and `submit_order` under `SET ROLE api_owner`:
 ./postgres4all apply-functions examples/vector
 ./postgres4all apply-functions examples/job_queue
 ./postgres4all apply-functions examples/dashboards
-./postgres4all apply-functions examples/everything    # orders + users tables, submit_order, register/login
+./postgres4all apply-functions examples/everything    # orders table + submit_order
 ```
 
 (Steps 3, 6, 9, 10's reads are native REST and need no function.)
@@ -105,33 +83,15 @@ one creates the `orders` table and `submit_order` under `SET ROLE api_owner`:
 Run everything **from the repo root in one shell session** — the token variable must persist. JSON is
 piped through `jq`.
 
-### 1. Alice registers and logs in — `auth`
+### 1. Mint Alice a token — `auth`
 
-No CLI: Alice creates her own account and gets a token entirely over the API. `register` and `login`
-are the only two things `anon` may call; everything after needs the token they hand back. Her password
-is stored as a bcrypt hash, never plaintext.
-
-```bash
-# sign up (anon)
-curl -s -X POST "http://localhost:3000/rpc/register" \
-  -H 'Content-Type: application/json' -d '{"email":"alice@example.com","pass":"hunter2"}' | jq -c
-```
-
-```json
-{"registered":true,"email":"alice@example.com"}
-```
+A request authenticates with a short-lived HS256 JWT signed with the install's auto-generated
+`JWT_SECRET`. Its `sub` claim is Alice's identity; its `role` claim is the Postgres role PostgREST
+switches into.
 
 ```bash
-# log in (anon) -> a short-lived HS256 JWT, signed in-database with the install's JWT_SECRET
-ALICE=$(curl -s -X POST "http://localhost:3000/rpc/login" \
-  -H 'Content-Type: application/json' -d '{"email":"alice@example.com","pass":"hunter2"}' | jq -r .token)
-echo "token: ${ALICE:0:24}..."
+ALICE=$(./postgres4all mint-token --sub alice)
 ```
-
-The token's `sub` claim is `alice@example.com` (her identity for RLS); its `role` claim is
-`authenticated` (the Postgres role PostgREST switches into). Registering again with the same email is a
-clean `409`; a wrong password is rejected. (`./postgres4all mint-token --sub alice@example.com` still
-works as an admin shortcut — it produces the same kind of token.)
 
 ### 2. Find places near her — `gis` (PostGIS)
 
@@ -215,7 +175,7 @@ curl -s "http://localhost:3000/notes?select=owner,body" -H "Authorization: Beare
 
 ```json
 [
-  { "owner": "alice@example.com", "body": "want the Keychron keyboard" }
+  { "owner": "alice", "body": "want the Keychron keyboard" }
 ]
 ```
 
@@ -243,7 +203,7 @@ curl -s "http://localhost:3000/orders?select=owner,product_id,qty" -H "Authoriza
 
 ```json
 [
-  { "owner": "alice@example.com", "product_id": 1, "qty": 2 }
+  { "owner": "alice", "product_id": 1, "qty": 2 }
 ]
 ```
 
@@ -263,7 +223,7 @@ curl -s "http://localhost:3000/jobs?payload=cs.%7B%22task%22:%22send_order_email
 ```
 
 ```json
-[{"status":"pending","payload":{"task":"send_order_email","user":"alice@example.com","order_id":1}}]
+[{"status":"pending","payload":{"task":"send_order_email","user":"alice","order_id":1}}]
 ```
 
 A worker then claims the **oldest** pending job with `FOR UPDATE SKIP LOCKED` (safe for many concurrent
@@ -274,7 +234,7 @@ curl -s -X POST "http://localhost:3000/rpc/claim_job_plpgsql" | jq -c
 ```
 
 ```json
-[{"id":1,"payload":{"task":"send_order_email","order_id":1,"user":"alice@example.com"},"status":"processing","locked_at":"…"}]
+[{"id":1,"payload":{"task":"send_order_email","order_id":1,"user":"alice"},"status":"processing","locked_at":"…"}]
 ```
 
 (On the demo install the queue is seeded with other pending jobs too; `claim_job` is strict FIFO by
@@ -290,7 +250,7 @@ curl -s "http://localhost:3000/events?kind=eq.purchase&select=kind,data&order=oc
 
 ```json
 [
-  { "kind": "purchase", "data": { "user": "alice@example.com", "order_id": 1, "product_id": 1, "qty": 2 } }
+  { "kind": "purchase", "data": { "user": "alice", "order_id": 1, "product_id": 1, "qty": 2 } }
 ]
 ```
 

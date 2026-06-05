@@ -67,9 +67,8 @@ You'll also want `curl` and `jq` on your PATH to call the API and pretty-print t
 | [`gis/`](gis/README.md) | `gis` + `api` | nearest-neighbour distance `/rpc` in both languages |
 | [`timeseries/`](timeseries/README.md) | `timeseries` + `api` | `GET` time window + windowed-count `/rpc` in both languages |
 | [`dashboards/`](dashboards/README.md) | `dashboards` + `timeseries` + `api` | `GET /event_daily` (rollup) + `/rpc` in both languages |
-| [`api/`](api/README.md) | `document_store` + `api` | REST endpoints + GraphQL resolved by `/rpc` in both languages |
 | [`auth/`](auth/README.md) | `auth` + `api` | JWT + row-level security; isolation holds through an `/rpc` in both languages |
-| [`everything/`](everything/README.md) | **all nine** + `api` | a guided tour: one user session across every capability — self-service `register`/`login` (issues a JWT), a `submit_order` `/rpc`, and its own `orders`/`users` tables |
+| [`everything/`](everything/README.md) | **all nine** + `api` | a guided tour: one user session across every capability, adding a `submit_order` `/rpc` + its own `orders` table |
 
 All examples need `"languages": { "plpython": true, "allow_untrusted": true }` so the PL/Python
 halves can run.
