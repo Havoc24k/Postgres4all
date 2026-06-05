@@ -25,7 +25,8 @@ psql postgres://postgres:<POSTGRES_PASSWORD>@localhost:5432/app   # direct SQL
 curl http://localhost:3000/products                              # REST API (PostgREST)
 ```
 
-Postgres listens on `localhost:5432`, PostgREST on `localhost:3000`. The binary operates on the
+Postgres listens on `localhost:5432`, PostgREST on `localhost:3000` (host ports; override per stack
+with `compose.ports.db` / `compose.ports.postgrest`). The binary operates on the
 current working directory (`config.json`, `functions/`, `build/` are cwd-relative) — run it from the
 project root.
 
@@ -44,9 +45,12 @@ capabilities without losing data; a `down -v` + `install` only to start over.
 
 ### Package map (`internal/`)
 - **`config`** — typed `Config`, `Load`, `Validate` (aggregates all problems: ≥1 capability, `auth`→`api`,
-  `dashboards`→`timeseries`, `plpython` gating, compose-name syntax/collision). `config.Order` is the
-  canonical capability order. `compose.project` + `compose.services{db,postgrest}` name the stack/services,
-  read via `ProjectName()`/`DBService()`/`PostgRESTService()` (empty → defaults `db`/`postgrest`).
+  `dashboards`→`timeseries`, `plpython` gating, compose-name syntax/collision, compose-port range/collision).
+  `config.Order` is the canonical capability order. `compose.project` + `compose.services{db,postgrest}` name
+  the stack/services, read via `ProjectName()`/`DBService()`/`PostgRESTService()` (empty → defaults
+  `db`/`postgrest`). `compose.ports{db,postgrest}` set the HOST ports (container ports stay 5432/3000),
+  read via `DBPort()`/`PostgRESTPort()` (0/unset → 5432/3000); the in-container tooling execs `psql`
+  inside the db container so a remapped host port never affects it.
 - **`secrets`** — `Hex(n)` via `crypto/rand` (`POSTGRES_PASSWORD`=Hex(24), `AUTHENTICATOR_PASSWORD`=Hex(16),
   `JWT_SECRET`=Hex(48)). API secrets have no config field — always generated, and preserved across
   regeneration: `generate` reuses any existing `build/.env` (so `update` keeps them stable).

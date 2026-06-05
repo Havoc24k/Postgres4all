@@ -44,6 +44,10 @@ type SecurityCfg struct {
 type ComposeCfg struct {
 	Project  string            `json:"project"`
 	Services map[string]string `json:"services"` // keyed by canonical name: "db", "postgrest"
+	// Ports maps a canonical service ("db", "postgrest") to the HOST port it is published on.
+	// The in-container ports are always 5432/3000; only the host side is configurable. Unset or
+	// 0 keeps the default (db 5432, postgrest 3000).
+	Ports map[string]int `json:"ports"`
 }
 type PostgresCfg struct {
 	User              string `json:"user"`
@@ -105,6 +109,22 @@ func (c *Config) PostgRESTService() string {
 	return "postgrest"
 }
 
+// DBPort is the configured host port for Postgres, or 5432.
+func (c *Config) DBPort() int {
+	if p := c.Compose.Ports["db"]; p != 0 {
+		return p
+	}
+	return 5432
+}
+
+// PostgRESTPort is the configured host port for PostgREST, or 3000.
+func (c *Config) PostgRESTPort() int {
+	if p := c.Compose.Ports["postgrest"]; p != 0 {
+		return p
+	}
+	return 3000
+}
+
 // TokenTTL is the default lifetime for minted tokens (security.jwt_ttl, or 15m).
 func (c *Config) TokenTTL() time.Duration {
 	if c.Security.JWTTTL != "" {
@@ -161,6 +181,19 @@ func (c *Config) Validate() error {
 	}
 	if c.DBService() == c.PostgRESTService() {
 		problems = append(problems, fmt.Sprintf("compose db and postgrest service names must differ (both %q)", c.DBService()))
+	}
+	// compose host ports
+	for k, p := range c.Compose.Ports {
+		if !knownSvc[k] {
+			problems = append(problems, fmt.Sprintf("unknown service %q in compose.ports (known: db, postgrest)", k))
+		}
+		if p < 1 || p > 65535 {
+			problems = append(problems, fmt.Sprintf("invalid host port %d for service %q in compose.ports (must be 1-65535)", p, k))
+		}
+	}
+	// only meaningful when postgrest exists; otherwise the postgrest port is unused
+	if c.Capabilities["api"] && c.DBPort() == c.PostgRESTPort() {
+		problems = append(problems, fmt.Sprintf("compose db and postgrest host ports must differ (both %d)", c.DBPort()))
 	}
 	if c.Security.JWTTTL != "" {
 		if _, err := time.ParseDuration(c.Security.JWTTTL); err != nil {

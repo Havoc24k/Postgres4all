@@ -27,6 +27,10 @@
     "services": {
       "db": "",
       "postgrest": ""
+    },
+    "ports": {
+      "db": 5432,
+      "postgrest": 3000
     }
   },
   "security": {

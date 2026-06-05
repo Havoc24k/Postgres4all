@@ -405,6 +405,8 @@ func writeCompose(c *config.Config, outDir string) error {
 		Name             string
 		DBService        string
 		PostgRESTService string
+		DBPort           int
+		PostgRESTPort    int
 		JWTAud           string
 	}
 
@@ -416,6 +418,8 @@ func writeCompose(c *config.Config, outDir string) error {
 		Name:             c.ProjectName(),
 		DBService:        c.DBService(),
 		PostgRESTService: c.PostgRESTService(),
+		DBPort:           c.DBPort(),
+		PostgRESTPort:    c.PostgRESTPort(),
 		JWTAud:           c.Security.JWTAudience,
 	}
 

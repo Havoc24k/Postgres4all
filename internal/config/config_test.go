@@ -63,9 +63,17 @@ func TestComposeAccessors(t *testing.T) {
 		t.Errorf("PostgRESTService default: want postgrest, got %q", c.PostgRESTService())
 	}
 
+	if c.DBPort() != 5432 {
+		t.Errorf("DBPort default: want 5432, got %d", c.DBPort())
+	}
+	if c.PostgRESTPort() != 3000 {
+		t.Errorf("PostgRESTPort default: want 3000, got %d", c.PostgRESTPort())
+	}
+
 	c = &Config{Compose: ComposeCfg{
 		Project:  "myapp",
 		Services: map[string]string{"db": "postgres", "postgrest": "rest"},
+		Ports:    map[string]int{"db": 5433, "postgrest": 3001},
 	}}
 	if c.ProjectName() != "myapp" {
 		t.Errorf("ProjectName: got %q", c.ProjectName())
@@ -75,6 +83,12 @@ func TestComposeAccessors(t *testing.T) {
 	}
 	if c.PostgRESTService() != "rest" {
 		t.Errorf("PostgRESTService override: got %q", c.PostgRESTService())
+	}
+	if c.DBPort() != 5433 {
+		t.Errorf("DBPort override: want 5433, got %d", c.DBPort())
+	}
+	if c.PostgRESTPort() != 3001 {
+		t.Errorf("PostgRESTPort override: want 3001, got %d", c.PostgRESTPort())
 	}
 }
 
@@ -91,6 +105,10 @@ func TestComposeValidate(t *testing.T) {
 		{"bad project name", ComposeCfg{Project: "My App"}, "invalid compose name"},
 		{"bad service name", ComposeCfg{Services: map[string]string{"db": "Post gres"}}, "invalid compose name"},
 		{"collision", ComposeCfg{Services: map[string]string{"db": "x", "postgrest": "x"}}, "must differ"},
+		{"valid ports", ComposeCfg{Ports: map[string]int{"db": 5433, "postgrest": 3001}}, ""},
+		{"unknown port key", ComposeCfg{Ports: map[string]int{"web": 1234}}, "compose.ports"},
+		{"port out of range", ComposeCfg{Ports: map[string]int{"db": 70000}}, "invalid host port"},
+		{"port collision", ComposeCfg{Ports: map[string]int{"db": 3000}}, "host ports must differ"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

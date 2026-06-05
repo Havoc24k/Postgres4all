@@ -251,4 +251,27 @@ func TestComposeNamingDefaultsUnchanged(t *testing.T) {
 	if strings.Contains(string(env), "P4A_DB_SERVICE") {
 		t.Errorf("default .env must not contain P4A_DB_SERVICE:\n%s", string(env))
 	}
+	// default host ports
+	if !strings.Contains(cs, "127.0.0.1:5432:5432") || !strings.Contains(cs, "127.0.0.1:3000:3000") {
+		t.Errorf("default host ports missing (want 5432:5432 and 3000:3000):\n%s", cs)
+	}
+}
+
+func TestComposePortsCustom(t *testing.T) {
+	c := cfg([]string{"document_store", "api", "auth"}, func(c *config.Config) {
+		c.Compose = config.ComposeCfg{Ports: map[string]int{"db": 5433, "postgrest": 3001}}
+	})
+	out := t.TempDir()
+	if err := Generate(c, out); err != nil {
+		t.Fatal(err)
+	}
+	compose, _ := os.ReadFile(filepath.Join(out, "docker-compose.yml"))
+	cs := string(compose)
+	// host port remapped; container port stays canonical
+	if !strings.Contains(cs, "127.0.0.1:5433:5432") {
+		t.Errorf("db host port not remapped to 5433:\n%s", cs)
+	}
+	if !strings.Contains(cs, "127.0.0.1:3001:3000") {
+		t.Errorf("postgrest host port not remapped to 3001:\n%s", cs)
+	}
 }
